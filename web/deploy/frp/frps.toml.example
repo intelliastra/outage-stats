@@ -1,0 +1,10 @@
+bindAddr = "0.0.0.0"
+bindPort = 7000
+proxyBindAddr = "127.0.0.1"
+
+auth.method = "token"
+auth.token = "REPLACE_WITH_RANDOM_TOKEN"
+
+log.to = "console"
+log.level = "info"
+

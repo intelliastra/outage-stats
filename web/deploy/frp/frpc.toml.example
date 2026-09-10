@@ -1,0 +1,13 @@
+serverAddr = "REPLACE_WITH_FRPS_ADDRESS"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "REPLACE_WITH_RANDOM_TOKEN"
+
+[[proxies]]
+name = "outage-stats"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 22229
+remotePort = 22301
+

@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*secret*
+*secrets*
+!*secret*.example
+!*secrets*.example
+*.local
+*.key
+*.pem
+账密
+
+# Runtime data and generated artifacts
+统计材料/input/
+统计材料/output/
+统计材料/.upload_tmp/
+统计材料/运行脚本/input/
+统计材料/运行脚本/output/
+*.xlsx
+*.xls
+*.zip
+*.part
+*.uploading
+*.assembling
+*.bak*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

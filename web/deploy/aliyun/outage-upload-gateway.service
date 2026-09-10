@@ -1,0 +1,26 @@
+[Unit]
+Description=Outage Stats local upload gateway (Aliyun)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/outage-upload-gateway
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=UPLOAD_TMP=/var/lib/outage-upload
+Environment=NAS_SFTP_USER=zhitu
+Environment=NAS_SFTP_KEY=/root/.ssh/outage_nas_ed25519
+Environment=NAS_SFTP_HOST=100.72.193.8
+Environment=NAS_SFTP_PORT=6330
+Environment=NAS_SFTP_FALLBACK=127.0.0.1:60022
+Environment=NAS_NEWDATA=/volume1/docker/outage-stats/统计材料/input/Newdata
+Environment=NAS_EXCLUDE=/volume1/docker/outage-stats/统计材料/input/exclude
+Environment=PULL_BASE_URL=https://outage-stats.demo.intelliastra.com
+Environment=PULL_RESOLVE=outage-stats.demo.intelliastra.com:443:47.121.130.229
+ExecStart=/usr/bin/python3 -m uvicorn upload_gateway:app --host 127.0.0.1 --port 22311
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

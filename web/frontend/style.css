@@ -1,0 +1,7 @@
+/* Page-specific overrides; theme tokens live in css/gov-theme.css */
+
+.app {
+  /* legacy unused; shell uses .gov-shell */
+  max-width: 1280px;
+  margin: 0 auto;
+}

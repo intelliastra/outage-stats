@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-web-version="20260909a">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日常统计 — 供电可靠性统计材料</title>
+  <script>
+    if (location.protocol === "http:" && /outage-stats\.demo\.intelliastra\.com$/i.test(location.hostname)) {
+      location.replace("https://" + location.host + location.pathname + location.search + location.hash);
+    }
+  </script>
+  <link rel="stylesheet" href="css/gov-theme.css?v=20260909a">
+  <link rel="stylesheet" href="style.css?v=20260909a">
+</head>
+<body>
+  <header class="gov-topbar">
+    <nav class="gov-nav">
+      <a href="index.html" class="active">日常统计</a>
+      <a href="historical.html">历史区间统计</a>
+      <a href="exclude.html">剔除外力破坏</a>
+    </nav>
+    <div class="gov-topbar-actions">
+      <span id="runtimeVersions" class="gov-version">分析脚本 … · 页面 …</span>
+      <button id="resetBtn" type="button" class="btn btn-topbar">页面重置</button>
+    </div>
+  </header>
+
+  <div class="gov-shell">
+    <div class="gov-layout gov-layout-3">
+      <section class="gov-panel gov-panel-input" aria-label="输入内容">
+        <header class="gov-panel-head">
+          <h2>输入内容</h2>
+        </header>
+        <div class="gov-panel-body">
+          <div class="gov-block exclude-section">
+            <h3>剔除文件导入</h3>
+            <div class="exclude-controls">
+              <label class="year-label" for="excludeYear">年份</label>
+              <select id="excludeYear" class="year-select"></select>
+              <span id="excludeCurrent" class="exclude-current">当前最新：—</span>
+            </div>
+            <div id="excludeDropZone" class="drop-zone exclude-drop">
+              <p class="drop-text">拖拽 Excel 到此处，或</p>
+              <label class="btn btn-secondary">
+                选择文件
+                <input id="excludeFileInput" type="file" accept=".xlsx,.xls" hidden>
+              </label>
+              <p class="hint">每次 1 个文件 → input/exclude/{年份}/</p>
+            </div>
+            <div class="exclude-actions">
+              <button id="excludeUploadBtn" class="btn btn-secondary" disabled>上传剔除文件</button>
+              <span id="excludePending" class="exclude-pending"></span>
+            </div>
+          </div>
+
+          <div class="gov-block upload-section">
+            <h3>Newdata 文件导入</h3>
+            <div id="dropZone" class="drop-zone">
+              <p class="drop-text">拖拽 Excel 到此处，或</p>
+              <label class="btn btn-secondary">
+                选择文件
+                <input id="fileInput" type="file" accept=".xlsx,.xls" hidden>
+              </label>
+              <p class="hint">可只导最近一段（不必年初至今全量）。重叠日期以本次导入为准，中间缺天按 0 条、不会用旧结果补；更早或更晚的历史结果会保留并一并计算。单文件不超过 150MB。</p>
+            </div>
+            <ul id="uploadList" class="upload-list"></ul>
+          </div>
+        </div>
+        <footer class="gov-panel-foot">
+          <div class="action-bar">
+            <button id="runBtn" class="btn btn-primary" disabled>开始运行</button>
+            <button id="stopBtn" class="btn btn-danger" disabled>停止运行</button>
+            <span id="runStatus" class="run-status"></span>
+          </div>
+          <p class="hint">长时间无日志不等于卡死；页间切换保留运行状态，刷新会重置会话。</p>
+        </footer>
+      </section>
+
+      <section class="gov-panel gov-panel-monitor gov-card" aria-label="运行监控">
+        <header class="gov-panel-head">
+          <h2>运行监控</h2>
+          <div class="status-row compact">
+            <span id="statusBadge" class="gov-badge">等待</span>
+          </div>
+          <div class="run-progress-box" id="runProgressBox">
+            <div class="gov-progress-track">
+              <div id="progressBar" class="gov-progress-fill" style="width:0%"></div>
+            </div>
+            <div class="timing-meta">
+              <span id="elapsedText">已用：—</span>
+              <span id="etaText">预计剩余：—</span>
+              <span id="pctText">0%</span>
+            </div>
+            <div id="totalTimeText" class="total-time-text"></div>
+          </div>
+        </header>
+        <div class="gov-panel-body gov-panel-body-fill">
+          <div class="tabs">
+            <button class="tab active" data-tab="frontend" type="button">前端日志</button>
+            <button class="tab" data-tab="script" type="button">脚本日志</button>
+          </div>
+          <div class="log-stack">
+            <div id="frontendLog" class="log-panel active"></div>
+            <div id="scriptLog" class="log-panel"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="resultSection" class="gov-panel gov-panel-output" aria-label="输出结果">
+        <header class="gov-panel-head">
+          <h2>输出结果</h2>
+        </header>
+        <div class="gov-panel-body">
+          <p id="resultPlaceholder" class="result-placeholder">运行完成后将在此显示摘要与下载链接。</p>
+          <div id="completeBanner" class="complete-banner"></div>
+
+          <div class="summary-block">
+            <div class="summary-header">
+              <h3>停电摘要（简版）</h3>
+              <button class="btn btn-small" type="button" data-copy="simple">复制</button>
+            </div>
+            <textarea id="summarySimple" readonly rows="5" placeholder="暂无摘要"></textarea>
+          </div>
+
+          <div class="summary-block">
+            <div class="summary-header">
+              <h3>停电摘要（全量版）</h3>
+              <button class="btn btn-small" type="button" data-copy="full">复制</button>
+            </div>
+            <textarea id="summaryFull" readonly rows="10" placeholder="暂无摘要"></textarea>
+          </div>
+
+          <div class="download-block">
+            <h3>下载生成文件</h3>
+            <div class="download-buttons">
+              <a id="dlAll" class="btn btn-primary" href="#" aria-disabled="true">一键下载全部</a>
+              <a id="dlResult" class="btn btn-secondary" href="#" aria-disabled="true">处理结果.xlsx</a>
+              <a id="dlPublish" class="btn btn-secondary" href="#" aria-disabled="true">发出版.xlsx</a>
+              <a id="dlStats" class="btn btn-secondary" href="#" aria-disabled="true">统计表.xlsx</a>
+              <a id="dlSummarySimple" class="btn btn-secondary" href="#" aria-disabled="true">简版摘要.txt</a>
+              <a id="dlSummaryFull" class="btn btn-secondary" href="#" aria-disabled="true">全量摘要.txt</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script src="js/common.js?v=20260909a"></script>
+  <script src="app.js?v=20260909a"></script>
+</body>
+</html>
