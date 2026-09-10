@@ -12,7 +12,13 @@ Environment=STATS_BASE=/opt/outage-stats/统计材料
 ExecStart=/opt/outage-stats/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 22329
 Restart=on-failure
 RestartSec=5
+MemoryHigh=3G
+MemoryMax=4G
+MemorySwapMax=2G
+OOMPolicy=continue
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 
 [Install]
 WantedBy=multi-user.target
-

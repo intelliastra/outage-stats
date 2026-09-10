@@ -365,6 +365,7 @@
     var pageKind = opts.pageKind;
     var finished = false;
     var pollTimer = null;
+    var pollInFlight = false;
 
     if (opts.eventSource) opts.eventSource.close();
     if (clearScript && scriptLog) scriptLog.textContent = "";
@@ -473,7 +474,7 @@
         opts.eventSource = null;
         pollJobOnce();
         if (!pollTimer) {
-          pollTimer = setInterval(pollJobOnce, 2000);
+          pollTimer = setInterval(pollJobOnce, 5000);
         }
       }
     });
@@ -483,7 +484,9 @@
         stopPoll();
         return;
       }
-      fetch("/api/jobs/" + jobId + "?include_logs=true")
+      if (pollInFlight) return;
+      pollInFlight = true;
+      fetch("/api/jobs/" + jobId + "?include_logs=false")
         .then(parseJsonSafe)
         .then(function (data) {
           if (
@@ -491,43 +494,61 @@
             data.status === "failed" ||
             data.status === "cancelled"
           ) {
-            if (opts.scriptLog && data.logs != null) {
-              opts.scriptLog.textContent = data.logs;
-            }
-            finishOnce({
-              status: data.status,
-              exit_code: data.exit_code,
-              summary_simple: data.summary_simple,
-              summary_full: data.summary_full,
-              files: data.files,
-              kind: data.kind,
-              created_at: data.created_at,
-              finished_at: data.finished_at,
-              duration_seconds: data.duration_seconds,
-              expected_seconds: data.expected_seconds,
-            });
+            // Poll status with a compact payload. Fetch the full log only once
+            // after completion instead of retransmitting it every few seconds.
+            return fetch("/api/jobs/" + jobId + "?include_logs=true")
+              .then(parseJsonSafe)
+              .catch(function () {
+                return data;
+              })
+              .then(function (finalData) {
+                if (opts.scriptLog && finalData.logs != null) {
+                  opts.scriptLog.textContent = finalData.logs;
+                }
+                finishOnce({
+                  status: finalData.status,
+                  exit_code: finalData.exit_code,
+                  summary_simple: finalData.summary_simple,
+                  summary_full: finalData.summary_full,
+                  files: finalData.files,
+                  kind: finalData.kind,
+                  created_at: finalData.created_at,
+                  finished_at: finalData.finished_at,
+                  duration_seconds: finalData.duration_seconds,
+                  expected_seconds: finalData.expected_seconds,
+                });
+              });
           }
         })
         .catch(function (err) {
           if (logFrontend && !finished) logFrontend("轮询失败：" + err.message);
+        })
+        .finally(function () {
+          pollInFlight = false;
         });
     }
 
     // 运行中兜底轮询，防止 done 事件未到达导致进度条卡住
-    pollTimer = setInterval(pollJobOnce, 3000);
+    pollTimer = setInterval(pollJobOnce, 5000);
 
     return es;
   }
 
   async function pollJob(jobId, opts) {
     try {
-      var resp = await fetch("/api/jobs/" + jobId + "?include_logs=true");
+      var resp = await fetch("/api/jobs/" + jobId + "?include_logs=false");
       var data = await parseJsonSafe(resp);
       if (
         data.status === "success" ||
         data.status === "failed" ||
         data.status === "cancelled"
       ) {
+        try {
+          var finalResp = await fetch("/api/jobs/" + jobId + "?include_logs=true");
+          data = await parseJsonSafe(finalResp);
+        } catch (_) {
+          /* status payload is sufficient when the final log fetch fails */
+        }
         if (opts.scriptLog && data.logs != null) opts.scriptLog.textContent = data.logs;
         if (opts.onRunningChange) opts.onRunningChange(false);
         if (opts.setProgressFn) opts.setProgressFn(false);
@@ -549,7 +570,7 @@
       } else {
         setTimeout(function () {
           pollJob(jobId, opts);
-        }, 2000);
+        }, 5000);
       }
     } catch (err) {
       if (opts.logFrontend) opts.logFrontend("轮询失败：" + err.message);
