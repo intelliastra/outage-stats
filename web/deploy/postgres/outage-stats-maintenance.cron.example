@@ -1,0 +1,4 @@
+# Daily database backup and raw-file archival. Install in /etc/cron.d/outage-stats-maintenance.
+15 2 * * * root /mnt/data-disk/outage-stats/web/deploy/postgres/backup_database.sh
+45 2 * * * root /mnt/data-disk/outage-stats/web/deploy/postgres/archive_raw_files.sh
+

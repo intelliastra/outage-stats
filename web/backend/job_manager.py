@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from log_parser import ParsedResult, parse_exclude_output, parse_script_output
+
+import database
 
 DEFAULT_EXPECTED_SECONDS = 1800  # 30 minutes fallback for ETA
 _FILENAME_VERSION_RE = re.compile(r"_v(\d+\.\d+\.\d+)", re.I)
@@ -60,6 +63,7 @@ class Job:
     kind: str = "daily"
     process: subprocess.Popen | None = field(default=None, repr=False)
     stop_requested: bool = False
+    parameters: dict = field(default_factory=dict)
     _subscribers: list[asyncio.Queue] = field(default_factory=list)
     _subscribers_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -264,7 +268,7 @@ class JobManager:
     def is_busy(self) -> bool:
         return self._running_job_id is not None
 
-    def create_and_start_job(self) -> tuple[Job | None, str | None]:
+    def create_and_start_job(self, *, activation_id: str | None = None) -> tuple[Job | None, str | None]:
         with self._lock:
             self._cleanup_old_jobs()
             if self._running_job_id is not None:
@@ -273,15 +277,41 @@ class JobManager:
             if not self.script_path.is_file():
                 return None, f"脚本不存在：{self.script_path}"
 
-            excel_files = list(self.newdata_dir.glob("*.xlsx")) + list(self.newdata_dir.glob("*.xls"))
-            if not excel_files:
-                return None, "Newdata 文件夹中没有 Excel 文件，请先上传"
+            if database.DATA_BACKEND == "postgres":
+                try:
+                    if not (activation_id or database.latest_activation_id()):
+                        return None, "数据库中没有已激活的数据批次，请先确认并激活上传批次"
+                except Exception as exc:
+                    return None, f"无法读取数据库激活版本：{exc}"
+            else:
+                excel_files = list(self.newdata_dir.glob("*.xlsx")) + list(self.newdata_dir.glob("*.xls"))
+                if not excel_files:
+                    return None, "Newdata 文件夹中没有 Excel 文件，请先上传"
 
             job_id = str(uuid.uuid4())
-            job = Job(id=job_id, kind="daily")
+            try:
+                effective_activation = activation_id or database.latest_activation_id()
+            except Exception as exc:
+                if database.DATA_BACKEND == "postgres":
+                    return None, f"无法读取数据库激活版本：{exc}"
+                effective_activation = activation_id
+            job = Job(
+                id=job_id,
+                kind="daily",
+                parameters={"activation_id": effective_activation, "data_backend": database.DATA_BACKEND},
+            )
             self.jobs[job_id] = job
             self._running_job_id = job_id
             cmd = [sys.executable, "-u", str(self.script_path), "--non-interactive"]
+
+            try:
+                database.create_report_run(job_id, job.parameters)
+            except Exception as exc:
+                if database.DATA_BACKEND == "postgres":
+                    self.jobs.pop(job_id, None)
+                    self._running_job_id = None
+                    return None, f"无法创建数据库任务记录：{exc}"
+                job.append_log(f"[DB] 影子任务记录失败，继续使用 Excel：{exc}\n")
 
         thread = threading.Thread(target=self._run_script, args=(job, cmd), daemon=True)
         thread.start()
@@ -416,6 +446,8 @@ class JobManager:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        if job.parameters.get("activation_id"):
+            env["REPORT_ACTIVATION_ID"] = str(job.parameters["activation_id"])
 
         popen_kwargs: dict = {
             "cwd": str(self.stats_base),
@@ -431,27 +463,47 @@ class JobManager:
             popen_kwargs["start_new_session"] = True
 
         try:
-            proc = subprocess.Popen(cmd, **popen_kwargs)
-            job.process = proc
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                job.append_log(line)
-            proc.wait()
-            job.exit_code = proc.returncode
-            log_text = job.get_log_text()
-            if job.kind == "exclude":
-                job.result = parse_exclude_output(log_text)
-            else:
-                job.result = parse_script_output(log_text)
-            if job.stop_requested:
-                job.status = JobStatus.CANCELLED
-                if job.exit_code is None or job.exit_code == 0:
-                    job.exit_code = -15
-            elif proc.returncode == 0:
-                self._fill_missing_outputs(job.result, job.kind)
-                job.status = JobStatus.SUCCESS
-            else:
-                job.status = JobStatus.FAILED
+            lock_context = nullcontext(True)
+            if database.enabled():
+                state = database.health()
+                if state.get("reachable"):
+                    lock_context = database.report_advisory_lock()
+                elif database.DATA_BACKEND == "postgres":
+                    raise RuntimeError(f"数据库不可用：{state.get('error', '连接失败')}")
+                else:
+                    job.append_log("[DB] 影子数据库不可用，本次仍由进程内锁保护。\n")
+
+            try:
+                database.update_report_run(job.id, "running")
+            except Exception as exc:
+                if database.DATA_BACKEND == "postgres":
+                    raise
+                job.append_log(f"[DB] 影子任务状态写入失败：{exc}\n")
+
+            with lock_context as acquired:
+                if not acquired:
+                    raise RuntimeError("数据库中已有统计任务正在运行")
+                proc = subprocess.Popen(cmd, **popen_kwargs)
+                job.process = proc
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    job.append_log(line)
+                proc.wait()
+                job.exit_code = proc.returncode
+                log_text = job.get_log_text()
+                if job.kind == "exclude":
+                    job.result = parse_exclude_output(log_text)
+                else:
+                    job.result = parse_script_output(log_text)
+                if job.stop_requested:
+                    job.status = JobStatus.CANCELLED
+                    if job.exit_code is None or job.exit_code == 0:
+                        job.exit_code = -15
+                elif proc.returncode == 0:
+                    self._fill_missing_outputs(job.result, job.kind)
+                    job.status = JobStatus.SUCCESS
+                else:
+                    job.status = JobStatus.FAILED
         except Exception as exc:
             job.append_log(f"\n[WEB] 启动脚本失败：{exc}\n")
             job.exit_code = 1
@@ -462,6 +514,16 @@ class JobManager:
             if job.status == JobStatus.SUCCESS:
                 duration = self.job_duration_seconds(job) or 0.0
                 self._save_duration(job.kind, duration)
+            try:
+                database.update_report_run(
+                    job.id,
+                    job.status.value,
+                    output_files=job.result.output_files,
+                    error_message=None if job.status == JobStatus.SUCCESS else job.get_log_text()[-2000:],
+                    elapsed_seconds=self.job_duration_seconds(job),
+                )
+            except Exception as exc:
+                job.append_log(f"[DB] 任务终态写入失败：{exc}\n")
             with self._lock:
                 if self._running_job_id == job.id:
                     self._running_job_id = None

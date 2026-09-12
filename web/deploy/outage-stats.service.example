@@ -9,6 +9,7 @@ WorkingDirectory=/opt/outage-stats/web/backend
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONIOENCODING=utf-8
 Environment=STATS_BASE=/opt/outage-stats/统计材料
+EnvironmentFile=-/etc/outage-stats-db.env
 ExecStart=/opt/outage-stats/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 22329
 Restart=on-failure
 RestartSec=5

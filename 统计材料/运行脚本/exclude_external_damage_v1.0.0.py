@@ -59,6 +59,9 @@ from typing import Iterable
 import openpyxl
 import pandas as pd
 
+from report_io import write_tables_streaming
+from postgres_source import load_active_records
+
 
 RAW_ADDED_COLUMNS = ["用户停电总次数", "是否统计", "不统计原因", "频繁停电类型", "停电预警类型"]
 COUNT_COLUMNS = ["停电总次数", "故障停电次数", "预安排停电次数"]
@@ -1833,11 +1836,12 @@ def format_worksheet(ws) -> None:
 
 
 def write_tables(tables: dict[str, pd.DataFrame], output_path: Path) -> None:
-    os.makedirs(output_path.parent, exist_ok=True)
-    with pd.ExcelWriter(output_path, engine="openpyxl", datetime_format="yyyy-mm-dd hh:mm:ss") as writer:
-        for sheet_name, table in tables.items():
-            table.to_excel(writer, sheet_name=sheet_name, index=False)
-            format_worksheet(writer.sheets[sheet_name])
+    write_tables_streaming(
+        tables,
+        output_path,
+        text_columns=TEXT_COLUMNS,
+        number_columns=NUMBER_COLUMNS,
+    )
 
 
 def build_publish_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:

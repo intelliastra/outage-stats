@@ -14,11 +14,21 @@
     excludeCurrent: {},
     excludePendingFile: null,
     defaultExcludeYear: 2026,
+    batchId: null,
+    databaseMode: "excel",
   };
 
   const dropZone = document.getElementById("dropZone");
   const fileInput = document.getElementById("fileInput");
   const uploadList = document.getElementById("uploadList");
+  const importPreview = document.getElementById("importPreview");
+  const importMode = document.getElementById("importMode");
+  const importStartDate = document.getElementById("importStartDate");
+  const importEndDate = document.getElementById("importEndDate");
+  const importCounts = document.getElementById("importCounts");
+  const importWarnings = document.getElementById("importWarnings");
+  const importActivateBtn = document.getElementById("importActivateBtn");
+  const importRejectBtn = document.getElementById("importRejectBtn");
   const excludeYear = document.getElementById("excludeYear");
   const excludeCurrent = document.getElementById("excludeCurrent");
   const excludeDropZone = document.getElementById("excludeDropZone");
@@ -199,6 +209,81 @@
     updateActionButtons();
   }
 
+  function hideImportPreview() {
+    state.batchId = null;
+    importPreview.hidden = true;
+    importCounts.textContent = "";
+    importWarnings.textContent = "";
+  }
+
+  async function loadImportPreview(batchId, databaseMode) {
+    const query = new URLSearchParams();
+    if (importStartDate.value) query.set("start_date", importStartDate.value);
+    if (importEndDate.value) query.set("end_date", importEndDate.value);
+    const suffix = query.toString() ? `?${query}` : "";
+    const resp = await GovUI.fetchWithTimeout(`/api/imports/${batchId}/preview${suffix}`, null, 30000);
+    const data = await GovUI.parseJsonSafe(resp);
+    if (!resp.ok) throw new Error(data.detail || "差异预览失败");
+    state.batchId = batchId;
+    state.databaseMode = databaseMode || "shadow";
+    importMode.textContent = state.databaseMode === "postgres" ? "正式库" : "影子库";
+    importStartDate.value = data.replace_start_date || "";
+    importEndDate.value = data.replace_end_date || "";
+    importCounts.textContent = `新增 ${data.added} 条 · 删除 ${data.deleted} 条 · 修改 ${data.modified} 条 · 未变化 ${data.unchanged} 条`;
+    const warningParts = [];
+    if (data.missing_dates && data.missing_dates.length) {
+      warningParts.push(`缺失日期 ${data.missing_dates.length} 天（激活后按 0 条处理）`);
+    }
+    const validation = data.validation || {};
+    if (validation.duplicate_keys && validation.duplicate_keys.length) {
+      warningParts.push(`重复键 ${validation.duplicate_keys.length} 个，禁止激活`);
+    }
+    if (validation.errors && validation.errors.length) {
+      warningParts.push(`校验错误 ${validation.errors.length} 条，禁止激活`);
+    }
+    importWarnings.textContent = warningParts.join("；") || "校验通过，可确认替换区间后激活。";
+    importActivateBtn.disabled = data.status !== "pending_confirmation";
+    importRejectBtn.disabled = !["pending_confirmation", "validation_error"].includes(data.status);
+    importPreview.hidden = false;
+  }
+
+  importStartDate.addEventListener("change", function () {
+    if (state.batchId) loadImportPreview(state.batchId, state.databaseMode).catch(err => logFrontend(err.message));
+  });
+  importEndDate.addEventListener("change", function () {
+    if (state.batchId) loadImportPreview(state.batchId, state.databaseMode).catch(err => logFrontend(err.message));
+  });
+  importActivateBtn.addEventListener("click", async function () {
+    if (!state.batchId) return;
+    importActivateBtn.disabled = true;
+    try {
+      const resp = await fetch(`/api/imports/${state.batchId}/activate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ start_date: importStartDate.value, end_date: importEndDate.value, confirmed_by: "admin" }),
+      });
+      const data = await GovUI.parseJsonSafe(resp);
+      if (!resp.ok) throw new Error(data.detail || "激活失败");
+      logFrontend(`数据库批次已激活：${state.batchId}`);
+      importWarnings.textContent = "批次已激活，已写入审计记录。";
+    } catch (err) {
+      logFrontend("激活失败：" + err.message);
+      importActivateBtn.disabled = false;
+    }
+  });
+  importRejectBtn.addEventListener("click", async function () {
+    if (!state.batchId) return;
+    try {
+      const resp = await fetch(`/api/imports/${state.batchId}/reject`, { method: "POST" });
+      const data = await GovUI.parseJsonSafe(resp);
+      if (!resp.ok) throw new Error(data.detail || "拒绝失败");
+      logFrontend(`数据库批次已拒绝：${state.batchId}`);
+      hideImportPreview();
+    } catch (err) {
+      logFrontend("拒绝失败：" + err.message);
+    }
+  });
+
   async function uploadFile(file) {
     const ext = file.name.split(".").pop().toLowerCase();
     if (ext !== "xlsx" && ext !== "xls") {
@@ -210,6 +295,12 @@
       const data = await GovUI.postFileWithRetry("/api/upload", file, { log: logFrontend });
       setSessionUploadedFile({ filename: data.filename, size: data.size });
       logFrontend(`导入成功：${data.filename} (${(data.size / 1024).toFixed(1)} KB)`);
+      if (data.batch_id) {
+        await loadImportPreview(data.batch_id, data.database_mode);
+      } else {
+        hideImportPreview();
+        if (data.database_error) logFrontend(`数据库影子校验未完成：${data.database_error}`);
+      }
       return true;
     } catch (err) {
       logFrontend(`上传失败：${file.name} — ${err.message}`);
@@ -417,6 +508,7 @@
     state.jobId = null;
     state.uploadedFiles = [];
     state.excludePendingFile = null;
+    hideImportPreview();
     excludePending.textContent = "";
     excludeUploadBtn.disabled = true;
     renderUploadList();

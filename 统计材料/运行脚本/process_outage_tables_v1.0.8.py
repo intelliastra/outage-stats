@@ -59,6 +59,9 @@ from typing import Iterable
 import openpyxl
 import pandas as pd
 
+from report_io import write_tables_streaming
+from postgres_source import load_active_records
+
 
 RAW_ADDED_COLUMNS = ["用户停电总次数", "是否统计", "不统计原因", "频繁停电类型", "停电预警类型"]
 COUNT_COLUMNS = ["停电总次数", "故障停电次数", "预安排停电次数"]
@@ -1884,11 +1887,12 @@ def format_worksheet(ws) -> None:
 
 
 def write_tables(tables: dict[str, pd.DataFrame], output_path: Path) -> None:
-    os.makedirs(output_path.parent, exist_ok=True)
-    with pd.ExcelWriter(output_path, engine="openpyxl", datetime_format="yyyy-mm-dd hh:mm:ss") as writer:
-        for sheet_name, table in tables.items():
-            table.to_excel(writer, sheet_name=sheet_name, index=False)
-            format_worksheet(writer.sheets[sheet_name])
+    write_tables_streaming(
+        tables,
+        output_path,
+        text_columns=TEXT_COLUMNS,
+        number_columns=NUMBER_COLUMNS,
+    )
 
 
 def build_publish_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
@@ -2096,7 +2100,11 @@ def build_2025_statistics_tables(
     基于 2025 年原始数据，按本次输出区间去年同期跑可靠性规则，
     生成 2025 年统计表所需的频繁停电清单。
     """
-    raw = read_2025_raw(raw_2025_path)
+    if os.environ.get("DATA_BACKEND", "excel").strip().lower() == "postgres":
+        raw = load_active_records(date(2025, 1, 1), date(2025, 12, 31))
+        print(f"  从 PostgreSQL 读取 2025 年有效数据：{len(raw)} 行")
+    else:
+        raw = read_2025_raw(raw_2025_path)
     raw = normalize_2025_columns(raw)
 
     yoy_start = prior_year_same_day(period_start)
@@ -2937,7 +2945,18 @@ def main() -> int:
     # 步骤 1：读取新数据
     # ============================================================
     raw_new: pd.DataFrame | None = None
-    if resolved_input:
+    postgres_mode = (
+        os.environ.get("DATA_BACKEND", "excel").strip().lower() == "postgres"
+        and not historical_mode
+        and not resolved_input
+    )
+    if postgres_mode:
+        def _load_postgres():
+            df = load_active_records()
+            print(f"  PostgreSQL 当前有效数据：{len(df)} 行")
+            return df
+        raw_new = runner.run("读取 PostgreSQL 当前有效数据", _load_postgres)
+    elif resolved_input:
         # 单文件模式（含 2025 Annual Summary）
         def _load_single():
             input_path = Path(resolved_input)
@@ -2969,7 +2988,7 @@ def main() -> int:
     existing_raw: pd.DataFrame = pd.DataFrame()
     previous_file_path: Path | None = None
 
-    if not resolved_input and not historical_mode:
+    if not resolved_input and not historical_mode and not postgres_mode:
         def _load_existing():
             nonlocal previous_file_path
             df, pf = read_existingdata_folder(existingdata_dir)
@@ -2978,6 +2997,16 @@ def main() -> int:
         result = runner.run("读取历史处理数据（output 最新子目录）", _load_existing, allow_skip=True)
         if result is not None:
             existing_raw = result
+    elif postgres_mode:
+        try:
+            latest_dir = _resolve_latest_output_subdir(Path(existingdata_dir))
+            candidates = [
+                path for path in latest_dir.glob("*处理结果.xlsx")
+                if "_发出版" not in path.name and path.is_file()
+            ]
+            previous_file_path = max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
+        except (FileNotFoundError, OSError):
+            previous_file_path = None
 
     # ============================================================
     # 步骤 3：按 Newdata 日期窗口整段替换

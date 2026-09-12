@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-web-version="20260910b">
+<html lang="zh-CN" data-web-version="20260912a">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,8 +9,8 @@
       location.replace("https://" + location.host + location.pathname + location.search + location.hash);
     }
   </script>
-  <link rel="stylesheet" href="css/gov-theme.css?v=20260910b">
-  <link rel="stylesheet" href="style.css?v=20260910b">
+  <link rel="stylesheet" href="css/gov-theme.css?v=20260912a">
+  <link rel="stylesheet" href="style.css?v=20260912a">
 </head>
 <body>
   <header class="gov-topbar">
@@ -64,6 +64,22 @@
               <p class="hint">可只导最近一段（不必年初至今全量）。重叠日期以本次导入为准，中间缺天按 0 条、不会用旧结果补；更早或更晚的历史结果会保留并一并计算。单文件不超过 150MB。</p>
             </div>
             <ul id="uploadList" class="upload-list"></ul>
+            <div id="importPreview" class="import-preview" hidden>
+              <div class="import-preview-head">
+                <strong>纠错批次差异预览</strong>
+                <span id="importMode" class="gov-badge">影子</span>
+              </div>
+              <div class="import-date-row">
+                <label>替换起点 <input id="importStartDate" type="date"></label>
+                <label>替换终点 <input id="importEndDate" type="date"></label>
+              </div>
+              <p id="importCounts" class="import-counts"></p>
+              <p id="importWarnings" class="hint"></p>
+              <div class="exclude-actions">
+                <button id="importActivateBtn" class="btn btn-primary" type="button">确认并激活</button>
+                <button id="importRejectBtn" class="btn btn-secondary" type="button">拒绝批次</button>
+              </div>
+            </div>
           </div>
         </div>
         <footer class="gov-panel-foot">
@@ -146,7 +162,7 @@
     </div>
   </div>
 
-  <script src="js/common.js?v=20260910b"></script>
-  <script src="app.js?v=20260910b"></script>
+  <script src="js/common.js?v=20260912a"></script>
+  <script src="app.js?v=20260912a"></script>
 </body>
 </html>

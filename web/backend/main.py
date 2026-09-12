@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import io
 import os
 import re
 import shutil
+import tempfile
 import time
 import zipfile
+from datetime import date
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -15,6 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
+
+import database
 
 from exclude_utils import (
     DEFAULT_EXCLUDE_YEAR,
@@ -70,12 +75,60 @@ class HistoricalRunRequest(BaseModel):
 class ExcludeRunRequest(BaseModel):
     input_filename: str = Field(..., description="已上传到服务器临时目录的文件名")
 
+
+class DailyRunRequest(BaseModel):
+    activation_id: str | None = Field(default=None, description="可选的数据激活版本")
+
+
+class ImportActionRequest(BaseModel):
+    start_date: date | None = None
+    end_date: date | None = None
+    confirmed_by: str = Field(default="admin", min_length=1, max_length=100)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def initialize_optional_database() -> None:
+    if not database.enabled():
+        return
+    try:
+        database.ensure_schema()
+        interrupted = database.recover_interrupted_report_runs()
+        if interrupted:
+            print(f"[DB] 已标记 {interrupted} 个重启前未结束任务为 interrupted", flush=True)
+    except Exception as exc:
+        # Shadow database failure must not take down the existing Excel service.
+        print(f"[DB] 初始化失败：{exc}", flush=True)
+
+
+async def _stage_daily_upload(path: Path, dest: str) -> dict[str, object]:
+    if dest not in ("daily", "newdata") or not database.enabled():
+        return {}
+    try:
+        result = await run_in_threadpool(database.stage_import, path)
+        result["database_mode"] = database.DATA_BACKEND
+        return result
+    except Exception as exc:
+        if database.DATA_BACKEND == "postgres":
+            raise HTTPException(status_code=503, detail=f"数据库批次校验失败：{exc}") from exc
+        return {"database_status": "shadow_error", "database_error": str(exc)[:300]}
+
+
+async def _stage_mask_upload(path: Path, year: int) -> dict[str, object]:
+    if not database.enabled():
+        return {}
+    try:
+        return await run_in_threadpool(database.stage_mask, path, year)
+    except Exception as exc:
+        if database.DATA_BACKEND == "postgres":
+            raise HTTPException(status_code=503, detail=f"Mask 版本登记失败：{exc}") from exc
+        return {"database_status": "shadow_error", "database_error": str(exc)[:300]}
 
 
 def sanitize_filename(name: str) -> str:
@@ -190,6 +243,7 @@ def health():
         "exclude_script": job_manager.exclude_script_path.name,
         "exclude_script_exists": job_manager.exclude_script_path.is_file(),
         "web_version": _web_asset_version(),
+        "database": database.health(),
     }
 
 
@@ -234,13 +288,15 @@ async def upload_exclude_file(
         raise HTTPException(status_code=400, detail="文件为空")
 
     dest.write_bytes(content)
-    return {
+    result = {
         "year": year,
         "filename": safe_name,
         "size": len(content),
         "path": str(dest),
         "dir": str(dest_dir),
     }
+    result.update(await _stage_mask_upload(dest, year))
+    return result
 
 
 @app.post("/api/upload")
@@ -264,12 +320,14 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="文件为空")
 
     dest_path.write_bytes(content)
-    return {
+    result = {
         "filename": safe_name,
         "size": len(content),
         "path": str(dest_path),
         "dest": dest,
     }
+    result.update(await _stage_daily_upload(dest_path, dest))
+    return result
 
 
 @app.post("/api/upload/chunk")
@@ -337,7 +395,57 @@ async def upload_chunk(
     if dest == "exclude":
         result["year"] = year
         result["dir"] = str(out_path.parent)
+        result.update(await _stage_mask_upload(out_path, year))
+    else:
+        result.update(await _stage_daily_upload(out_path, dest))
     return result
+
+
+@app.get("/api/imports/{batch_id}/preview")
+def import_preview(
+    batch_id: str,
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+):
+    try:
+        return database.preview_import(batch_id, start_date, end_date)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/imports/{batch_id}/activate")
+def import_activate(batch_id: str, request: ImportActionRequest):
+    try:
+        preview = database.preview_import(batch_id, request.start_date, request.end_date)
+        start = request.start_date or date.fromisoformat(preview["replace_start_date"])
+        end = request.end_date or date.fromisoformat(preview["replace_end_date"])
+        return database.activate_import(batch_id, start, end, request.confirmed_by)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/imports/{batch_id}/reject")
+def import_reject(batch_id: str):
+    try:
+        return database.reject_import(batch_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/imports/{batch_id}/rollback")
+def import_rollback(batch_id: str, request: ImportActionRequest):
+    try:
+        return database.rollback_import(batch_id, request.confirmed_by)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/newdata/files")
@@ -364,8 +472,9 @@ def list_newdata_files(kind: str = Query("daily", description="页面标识: dai
 
 
 @app.post("/api/run")
-def run_script():
-    job, error = job_manager.create_and_start_job()
+def run_script(request: DailyRunRequest | None = None):
+    activation_id = request.activation_id if request else None
+    job, error = job_manager.create_and_start_job(activation_id=activation_id)
     if error:
         raise HTTPException(status_code=409 if job_manager.is_busy() else 400, detail=error)
     return {
@@ -631,7 +740,7 @@ def download_file(job_id: str, file_key: str):
     )
 
 
-def _download_all_zip(job) -> StreamingResponse:
+def _download_all_zip(job) -> FileResponse:
     files: list[tuple[str, Path]] = []
     for key in ("result", "publish", "stats", "summary_simple", "summary_full"):
         path_str = job.result.output_files.get(key)
@@ -644,18 +753,32 @@ def _download_all_zip(job) -> StreamingResponse:
     if not files:
         raise HTTPException(status_code=404, detail="没有可打包的输出文件")
 
-    buf = io.BytesIO()
-    # XLSX files are ZIP containers already; deflating them again adds CPU cost
-    # with little size reduction and delays the first download byte.
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
-        for name, path in files:
-            zf.write(path, arcname=name)
-    buf.seek(0)
+    download_tmp = STATS_BASE / ".download_tmp"
+    download_tmp.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        prefix=f"outage-stats-{job.id[:8]}-",
+        suffix=".zip",
+        dir=download_tmp,
+        delete=False,
+    )
+    zip_path = Path(handle.name)
+    handle.close()
+    try:
+        # XLSX files are ZIP containers already; storing them avoids expensive
+        # recompression. FileResponse streams from disk and supports ranges.
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+            for name, path in files:
+                zf.write(path, arcname=name)
+    except BaseException:
+        zip_path.unlink(missing_ok=True)
+        raise
+
     zip_name = f"outage-stats-{job.id[:8]}.zip"
-    return StreamingResponse(
-        buf,
+    return FileResponse(
+        path=str(zip_path),
+        filename=zip_name,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+        background=BackgroundTask(zip_path.unlink, missing_ok=True),
     )
 
 

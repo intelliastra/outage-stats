@@ -444,6 +444,46 @@ a.btn[aria-disabled="true"] {
   margin-left: 8px;
 }
 
+.import-preview {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #b7d1f3;
+  border-radius: 8px;
+  background: #f6faff;
+}
+
+.import-preview-head,
+.import-date-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.import-date-row {
+  margin-top: 10px;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.import-date-row label {
+  color: #334155;
+  font-size: 13px;
+}
+
+.import-date-row input {
+  margin-left: 4px;
+  padding: 5px 7px;
+  border: 1px solid #b6c6da;
+  border-radius: 5px;
+}
+
+.import-counts {
+  margin: 10px 0 4px;
+  color: #0b4a8b;
+  font-weight: 600;
+}
+
 .status-row {
   display: flex;
   flex-wrap: wrap;
