@@ -223,6 +223,11 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _executemany(conn, statement: str, parameters: list[Any]) -> None:
+    with conn.cursor() as cursor:
+        cursor.executemany(statement, parameters)
+
+
 def _iter_workbook_rows(path: Path) -> Iterator[tuple[str, int, dict[str, Any]]]:
     if path.suffix.lower() == ".xlsx":
         import openpyxl
@@ -370,10 +375,10 @@ def stage_import(path: Path | str, *, synthetic_reconciliation: bool = False) ->
                 }
             )
             if len(buffer) >= 1000:
-                conn.executemany(INSERT_RECORD_SQL, buffer)
+                _executemany(conn, INSERT_RECORD_SQL, buffer)
                 buffer.clear()
         if buffer:
-            conn.executemany(INSERT_RECORD_SQL, buffer)
+            _executemany(conn, INSERT_RECORD_SQL, buffer)
 
         required_fields = (
             "work_order", "customer_code", "customer_name", "customer_nature",
@@ -452,7 +457,8 @@ def stage_mask(path: Path | str, year: int) -> dict[str, Any]:
             ),
         )
         if dates:
-            conn.executemany(
+            _executemany(
+                conn,
                 "INSERT INTO mask_date (mask_batch_id,mask_date) VALUES (%s,%s)",
                 [(batch_id, value) for value in sorted(dates)],
             )
