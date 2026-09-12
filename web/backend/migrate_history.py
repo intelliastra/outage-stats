@@ -13,6 +13,9 @@ import database
 
 
 EXPORT_TIMESTAMP = re.compile(r"(?<!\d)(20\d{15})(?!\d)")
+FULL_DATE = re.compile(r"(20\d{2})[.\-](\d{1,2})[.\-](\d{1,2})")
+SHORT_RANGE_END = re.compile(r"-(\d{1,2})[.\-](\d{1,2})(?:\D|$)")
+COMPACT_RANGE = re.compile(r"(20\d{2})(\d{2})(\d{2})-(\d{2})(\d{2})")
 
 
 def sha256(path: Path) -> str:
@@ -30,6 +33,29 @@ def sort_key(path: Path):
             return (0, datetime.strptime(match.group(1), "%Y%m%d%H%M%S%f"), path.name)
         except ValueError:
             pass
+    full_dates = FULL_DATE.findall(path.stem)
+    try:
+        if len(full_dates) >= 2:
+            year, month, day = full_dates[-1]
+            return (0, datetime(int(year), int(month), int(day), 23, 59, 59), path.name)
+        if len(full_dates) == 1:
+            year = int(full_dates[0][0])
+            suffix = SHORT_RANGE_END.search(path.stem)
+            if suffix:
+                return (
+                    0,
+                    datetime(year, int(suffix.group(1)), int(suffix.group(2)), 23, 59, 59),
+                    path.name,
+                )
+        compact = COMPACT_RANGE.search(path.stem)
+        if compact:
+            return (
+                0,
+                datetime(int(compact.group(1)), int(compact.group(4)), int(compact.group(5)), 23, 59, 59),
+                path.name,
+            )
+    except ValueError:
+        pass
     return (1, datetime.max, path.name)
 
 
