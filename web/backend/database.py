@@ -230,6 +230,11 @@ def _iter_workbook_rows(path: Path) -> Iterator[tuple[str, int, dict[str, Any]]]
         workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
         try:
             for worksheet in workbook.worksheets:
+                # Some South Grid exports declare an incorrect A1:A1 worksheet
+                # dimension although thousands of rows exist. read_only mode
+                # trusts that metadata unless dimensions are reset explicitly.
+                if worksheet.calculate_dimension() == "A1:A1":
+                    worksheet.reset_dimensions()
                 rows = worksheet.iter_rows(values_only=True)
                 try:
                     raw_headers = next(rows)
@@ -297,15 +302,23 @@ def stage_import(path: Path | str, *, synthetic_reconciliation: bool = False) ->
             "ORDER BY uploaded_at DESC LIMIT 1",
             (file_hash,),
         ).fetchone()
-        if existing:
+        if existing and existing["status"] != "validation_error":
             return {"batch_id": str(existing["id"]), "duplicate_file": True, **dict(existing)}
-
-        conn.execute(
-            "INSERT INTO import_batch "
-            "(id, filename, file_sha256, status, original_file_path, synthetic_reconciliation) "
-            "VALUES (%s, %s, %s, 'validating', %s, %s)",
-            (batch_id, source.name, file_hash, str(source), synthetic_reconciliation),
-        )
+        if existing:
+            batch_id = existing["id"]
+            conn.execute("DELETE FROM outage_record_version WHERE batch_id=%s", (batch_id,))
+            conn.execute(
+                "UPDATE import_batch SET status='validating',uploaded_at=now(),"
+                "validation_result='{}'::jsonb WHERE id=%s",
+                (batch_id,),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO import_batch "
+                "(id, filename, file_sha256, status, original_file_path, synthetic_reconciliation) "
+                "VALUES (%s, %s, %s, 'validating', %s, %s)",
+                (batch_id, source.name, file_hash, str(source), synthetic_reconciliation),
+            )
 
         buffer: list[dict[str, Any]] = []
         for sheet_name, source_row, payload in _iter_workbook_rows(source):

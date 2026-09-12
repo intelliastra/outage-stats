@@ -62,7 +62,11 @@ def main() -> int:
         stats_base / "2025年停电用户数据.xlsx",
     ]
     baseline = next((path for path in baseline_candidates if path.is_file()), None)
-    newdata_inputs = [p for p in source_root.rglob("*.xlsx") if not p.name.startswith("~$")]
+    daily_root = source_root / "daily"
+    scan_root = daily_root if daily_root.is_dir() else source_root
+    newdata_inputs = [
+        p for p in scan_root.glob("*.xlsx") if not p.name.startswith("~$")
+    ]
     inputs = ([baseline] if baseline else []) + sorted(newdata_inputs, key=sort_key)
     snapshots = sorted(
         [
