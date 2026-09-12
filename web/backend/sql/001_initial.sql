@@ -49,6 +49,21 @@ CREATE INDEX IF NOT EXISTS outage_record_current_range_idx
     WHERE activated_at IS NOT NULL AND superseded_at IS NULL AND rolled_back_at IS NULL;
 CREATE INDEX IF NOT EXISTS outage_record_batch_idx ON outage_record_version (batch_id);
 
+CREATE TABLE IF NOT EXISTS batch_record_audit (
+    batch_id uuid NOT NULL REFERENCES import_batch(id) ON DELETE RESTRICT,
+    record_key text NOT NULL,
+    content_hash char(64) NOT NULL,
+    source_sheet text NOT NULL,
+    source_row integer NOT NULL,
+    outage_start timestamp NOT NULL,
+    city text,
+    version_id bigint REFERENCES outage_record_version(id) ON DELETE SET NULL,
+    PRIMARY KEY (batch_id, record_key)
+);
+
+CREATE INDEX IF NOT EXISTS batch_record_audit_version_idx
+    ON batch_record_audit (version_id);
+
 CREATE TABLE IF NOT EXISTS mask_batch (
     id uuid PRIMARY KEY,
     filename text NOT NULL,

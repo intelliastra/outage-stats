@@ -560,13 +560,49 @@ def activate_import(batch_id: str, start: date, end: date, confirmed_by: str) ->
             raise ValueError("确认范围必须覆盖批次中全部停电日期")
         conn.execute("SELECT pg_advisory_xact_lock(hashtext('outage-import-activation'))")
         conn.execute(
+            "INSERT INTO batch_record_audit "
+            "(batch_id,record_key,content_hash,source_sheet,source_row,outage_start,city) "
+            "SELECT batch_id,record_key,content_hash,source_sheet,source_row,outage_start,city "
+            "FROM outage_record_version WHERE batch_id=%s",
+            (batch["id"],),
+        )
+        conn.execute(
+            "CREATE TEMP TABLE unchanged_staged ON COMMIT DROP AS "
+            "SELECT staged.id AS staged_id,current.id AS current_id,staged.record_key "
+            "FROM outage_record_version staged JOIN current_outage_record current "
+            "ON current.record_key=staged.record_key AND current.content_hash=staged.content_hash "
+            "WHERE staged.batch_id=%s",
+            (batch["id"],),
+        )
+        conn.execute(
+            "UPDATE batch_record_audit audit SET version_id=unchanged.current_id "
+            "FROM unchanged_staged unchanged WHERE audit.batch_id=%s "
+            "AND audit.record_key=unchanged.record_key",
+            (batch["id"],),
+        )
+        # Unchanged rows retain their existing version. The batch audit points
+        # to it, avoiding a full JSON copy for every overlapping upload.
+        conn.execute(
+            "DELETE FROM outage_record_version WHERE id IN "
+            "(SELECT staged_id FROM unchanged_staged)"
+        )
+        conn.execute(
             "UPDATE outage_record_version SET superseded_at=now(), superseded_by_batch_id=%s "
-            "WHERE id IN (SELECT id FROM current_outage_record WHERE outage_start::date BETWEEN %s AND %s)",
-            (batch["id"], start, end),
+            "WHERE activated_at IS NOT NULL AND superseded_at IS NULL AND rolled_back_at IS NULL "
+            "AND outage_start::date BETWEEN %s AND %s "
+            "AND NOT EXISTS (SELECT 1 FROM batch_record_audit audit "
+            "WHERE audit.batch_id=%s AND audit.version_id=outage_record_version.id)",
+            (batch["id"], start, end, batch["id"]),
         )
         conn.execute(
             "UPDATE outage_record_version SET activated_at=now() WHERE batch_id=%s",
             (batch["id"],),
+        )
+        conn.execute(
+            "UPDATE batch_record_audit audit SET version_id=version.id "
+            "FROM outage_record_version version WHERE audit.batch_id=%s "
+            "AND version.batch_id=%s AND audit.record_key=version.record_key",
+            (batch["id"], batch["id"]),
         )
         conn.execute(
             "INSERT INTO batch_activation "
@@ -591,9 +627,28 @@ def reject_import(batch_id: str) -> dict[str, Any]:
         batch = _load_batch(batch_id, conn)
         if batch["status"] not in {"pending_confirmation", "validation_error"}:
             raise ValueError(f"批次状态 {batch['status']} 不允许拒绝")
+        conn.execute(
+            "DELETE FROM outage_record_version WHERE batch_id=%s AND activated_at IS NULL",
+            (batch["id"],),
+        )
         conn.execute("UPDATE import_batch SET status='rejected' WHERE id=%s", (batch["id"],))
         conn.commit()
     return {"batch_id": batch_id, "status": "rejected"}
+
+
+def discard_invalid_staging(batch_id: str) -> int:
+    """Keep validation metadata but release bulky rows for a non-activatable batch."""
+    with connection() as conn:
+        batch = _load_batch(batch_id, conn)
+        if batch["status"] != "validation_error":
+            return 0
+        cursor = conn.execute(
+            "DELETE FROM outage_record_version WHERE batch_id=%s AND activated_at IS NULL",
+            (batch["id"],),
+        )
+        count = cursor.rowcount
+        conn.commit()
+    return count
 
 
 def rollback_import(batch_id: str, confirmed_by: str) -> dict[str, Any]:

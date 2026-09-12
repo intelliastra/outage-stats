@@ -128,6 +128,10 @@ def main() -> int:
                     datetime.fromisoformat(preview["replace_end_date"]).date(),
                     args.confirmed_by,
                 )
+            elif staged.get("status") == "validation_error":
+                entry["discarded_staging_rows"] = database.discard_invalid_staging(
+                    staged["batch_id"]
+                )
             report["batches"].append(entry)
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
