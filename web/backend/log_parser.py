@@ -146,6 +146,8 @@ def parse_script_output(log_text: str) -> ParsedResult:
     result.summary_full = _extract_summary_section(log_text, SUMMARY_FULL_TITLE)
 
     for key, pattern in OUTPUT_PATTERNS.items():
+        if key == "exclude_output":
+            continue
         match = pattern.search(log_text)
         if match:
             result.output_files[key] = match.group(1).strip()

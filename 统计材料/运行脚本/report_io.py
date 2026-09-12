@@ -240,3 +240,29 @@ def write_tables_streaming(
     except BaseException:
         temp_path.unlink(missing_ok=True)
         raise
+
+
+def write_text_atomic(path: Path | str, text: str) -> Path:
+    """Atomically publish a UTF-8 text artifact."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        prefix=f".{destination.stem}.",
+        suffix=".txt.tmp",
+        dir=destination.parent,
+        delete=False,
+        mode="w",
+        encoding="utf-8",
+        newline="\n",
+    )
+    temp_path = Path(handle.name)
+    try:
+        with handle:
+            handle.write(text)
+            if text and not text.endswith("\n"):
+                handle.write("\n")
+        os.replace(temp_path, destination)
+        return destination
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise

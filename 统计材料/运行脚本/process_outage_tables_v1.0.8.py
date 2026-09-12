@@ -60,7 +60,7 @@ from typing import Iterable
 import openpyxl
 import pandas as pd
 
-from report_io import write_tables_streaming
+from report_io import write_tables_streaming, write_text_atomic
 from postgres_source import load_active_records
 
 
@@ -3132,6 +3132,8 @@ def main() -> int:
     print(f"  处理结果输出  ：{output_path}")
     print(f"  发出版输出    ：{publish_output_path}")
     print(f"  统计表输出    ：{stats_output_path}")
+    summary_simple_path = output_path.parent / f"{date_range_str}停电摘要（简版）.txt"
+    summary_full_path = output_path.parent / f"{date_range_str}停电摘要（全量版）.txt"
 
     # 历史预警记录
     if args.previous_output:
@@ -3204,6 +3206,10 @@ def main() -> int:
         print(s_simple, end="" if s_simple.endswith("\n") else "\n")
         print("\n" + summary_banner("停电摘要（全量版）"))
         print(s_full, end="" if s_full.endswith("\n") else "\n")
+        write_text_atomic(summary_simple_path, s_simple)
+        write_text_atomic(summary_full_path, s_full)
+        print(f"  简版摘要输出  ：{summary_simple_path}")
+        print(f"  全量摘要输出  ：{summary_full_path}")
         return s_simple, s_full
 
     runner.run("生成停电摘要文字", _gen_summary, allow_skip=True)

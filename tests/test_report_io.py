@@ -12,10 +12,17 @@ import pandas as pd
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "统计材料" / "运行脚本"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from report_io import write_tables_streaming
+from report_io import write_tables_streaming, write_text_atomic
 
 
 class ReportIoTest(unittest.TestCase):
+    def test_atomic_text_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "摘要.txt"
+            write_text_atomic(target, "第一行\n第二行")
+            self.assertEqual(target.read_text(encoding="utf-8"), "第一行\n第二行\n")
+            self.assertFalse(list(target.parent.glob("*.tmp")))
+
     def test_streaming_writer_preserves_contract(self):
         tables = {
             "用户停电总次数统计表": pd.DataFrame(
@@ -47,4 +54,3 @@ class ReportIoTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
