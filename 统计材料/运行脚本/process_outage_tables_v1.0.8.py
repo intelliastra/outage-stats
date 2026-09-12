@@ -46,6 +46,7 @@ MAJOR_EVENT_FILE_PATH  = ""  # 额外 2026 重大事件日文件（txt/csv/xlsx�
 # ============================================================
 
 import argparse
+import hashlib
 import os
 import re
 import sys
@@ -2016,6 +2017,56 @@ def read_2025_raw(file_path: str) -> pd.DataFrame:
     return df.dropna(how="all").reset_index(drop=True)
 
 
+def read_2025_raw_cached(file_path: str) -> pd.DataFrame:
+    """Parse the 2025 baseline once, then reuse an atomically written cache."""
+    target = Path(file_path)
+    if not target.exists():
+        raise FileNotFoundError(f"2025 年数据文件不存在：{target}")
+    digest = hashlib.sha256()
+    with target.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    cache_root = Path(
+        os.environ.get(
+            "OUTAGE_CACHE_DIR",
+            str(Path(OUTPUT_BASE_DIR).parent / ".cache"),
+        )
+    )
+    cache_root.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_root / f"2025-normalized-v108-{digest.hexdigest()[:20]}.pkl"
+    if cache_path.is_file():
+        started = _time_module.perf_counter()
+        cached = pd.read_pickle(cache_path)
+        print(
+            f"  读取 2025 基准缓存：{cache_path.name}（{len(cached)} 行，"
+            f"{_time_module.perf_counter() - started:.1f}s）"
+        )
+        return cached
+
+    raw = normalize_2025_columns(read_2025_raw(str(target)))
+    handle = tempfile.NamedTemporaryFile(
+        prefix=f".{cache_path.stem}.", suffix=".tmp", dir=cache_root, delete=False
+    )
+    temp_path = Path(handle.name)
+    handle.close()
+    try:
+        raw.to_pickle(temp_path)
+        os.replace(temp_path, cache_path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+    # Keep only a few old source revisions to bound disk usage.
+    old_caches = sorted(
+        cache_root.glob("2025-normalized-v108-*.pkl"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for old_path in old_caches[4:]:
+        old_path.unlink(missing_ok=True)
+    print(f"  已生成 2025 基准缓存：{cache_path.name}（{len(raw)} 行）")
+    return raw
+
+
 def normalize_2025_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     将 2025 年原始停电数据列名映射为本脚本标准列名。
@@ -2103,9 +2154,9 @@ def build_2025_statistics_tables(
     if os.environ.get("DATA_BACKEND", "excel").strip().lower() == "postgres":
         raw = load_active_records(date(2025, 1, 1), date(2025, 12, 31))
         print(f"  从 PostgreSQL 读取 2025 年有效数据：{len(raw)} 行")
+        raw = normalize_2025_columns(raw)
     else:
-        raw = read_2025_raw(raw_2025_path)
-    raw = normalize_2025_columns(raw)
+        raw = read_2025_raw_cached(raw_2025_path)
 
     yoy_start = prior_year_same_day(period_start)
     yoy_end = prior_year_same_day(period_end)
