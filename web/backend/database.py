@@ -314,7 +314,22 @@ def stage_import(path: Path | str, *, synthetic_reconciliation: bool = False) ->
             (file_hash,),
         ).fetchone()
         if existing and existing["status"] != "validation_error":
-            return {"batch_id": str(existing["id"]), "duplicate_file": True, **dict(existing)}
+            return {
+                "batch_id": str(existing["id"]),
+                "duplicate_file": True,
+                "status": existing["status"],
+                "row_count": existing["row_count"],
+                "inferred_start_date": (
+                    existing["inferred_start_date"].isoformat()
+                    if existing["inferred_start_date"] else None
+                ),
+                "inferred_end_date": (
+                    existing["inferred_end_date"].isoformat()
+                    if existing["inferred_end_date"] else None
+                ),
+                "validation": existing["validation_result"],
+                "preview_url": f"/api/imports/{existing['id']}/preview",
+            }
         if existing:
             batch_id = existing["id"]
             conn.execute("DELETE FROM outage_record_version WHERE batch_id=%s", (batch_id,))

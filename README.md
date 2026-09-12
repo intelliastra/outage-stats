@@ -112,6 +112,8 @@ NAS Docker 示例在 `web/deploy/nas/outage-stats/`。Aliyun、Nginx 和 FRP 示
 
 上传批次先校验必需字段、日期和重复记录键。记录键优先使用“停电记录id”，其次“事件id + 用户id”，最后使用“工单号 + 用户编码 + 馈线编码 + 去重后停电开始时间”。批次默认是 `pending_confirmation`，页面展示增删改、每日行数、缺失日期和地市影响；确认后才在单个事务中替换指定日期窗口。最近一次激活可直接回滚，更早历史通过新纠错批次恢复。
 
+已激活批次中的未变化记录通过 `batch_record_audit` 引用原版本，不重复保存整行 JSON；只有新增和修改才生成新版本。这样既保留每次上传的完整成员审计，又避免大量重叠批次耗尽服务器磁盘。
+
 数据库容器配置位于 `web/deploy/postgres/`：仅监听 `127.0.0.1:25432`，限制 768 MB 内存、2 核 CPU、20 个连接，数据目录为 `/mnt/data-disk/outage-stats/postgres-data`。实际 `.env` 与 `DATABASE_URL` 必须只保存在服务器，不能提交 Git。
 
 历史迁移先清点并哈希，再按文件名导出时间回放：
