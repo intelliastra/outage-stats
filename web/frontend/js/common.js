@@ -924,7 +924,11 @@
       var m = String(url).match(/[?&]year=(\d+)/);
       return { dest: "exclude", year: m ? m[1] : "2026" };
     }
-    return { dest: "newdata", year: null };
+    var destination = String(url).match(/[?&]dest=([^&#]+)/);
+    return {
+      dest: destination ? decodeURIComponent(destination[1]) : "newdata",
+      year: null,
+    };
   }
 
   function postChunkOnce(chunkUrl, blob) {

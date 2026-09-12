@@ -191,11 +191,16 @@
     }
     logFrontend("正在上传：" + file.name + " ...");
     try {
-      var data = await GovUI.postFileWithRetry("/api/upload", file, { log: logFrontend });
+      var data = await GovUI.postFileWithRetry(
+        "/api/upload?dest=exclude_newdata",
+        file,
+        { log: logFrontend }
+      );
       state.uploadedFilename = data.filename;
       state.uploadedSize = data.size;
       renderUploadList();
       logFrontend("导入成功：" + data.filename + " (" + (data.size / 1024).toFixed(1) + " KB)");
+      await loadConfig();
       persistForm();
       return true;
     } catch (err) {
