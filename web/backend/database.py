@@ -35,7 +35,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_ENABLED = DATA_BACKEND in {"shadow", "postgres"} and bool(DATABASE_URL)
 
 ALIASES: dict[str, tuple[str, ...]] = {
-    "source_record_id": ("停电记录id", "停电记录ID", "记录id", "记录ID"),
+    "source_record_id": ("停电记录id", "停电记录ID", "记录id", "记录ID", "主键"),
     "event_id": ("事件id", "事件ID", "中压运行事件id", "中压运行事件ID", "运行事件id"),
     "user_id": ("用户id", "用户ID"),
     "work_order": ("工单号", "停电工单号"),
@@ -52,7 +52,13 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "实际停电开始时间",
         "停电开始日期",
     ),
-    "outage_end": ("停电结束时间", "停电结束时刻", "实际停电结束时间", "停电结束日期"),
+    "outage_end": (
+        "去重后停电结束时间",
+        "停电结束时间",
+        "停电结束时刻",
+        "实际停电结束时间",
+        "停电结束日期",
+    ),
     "city": ("所属地市", "地市", "供电局"),
     "district": ("所属区局", "区局", "县区局"),
     "station": ("所属供电所", "供电所"),

@@ -23,6 +23,11 @@ class DatabaseKeyTest(unittest.TestCase):
         self.assertEqual(key, "record:R-1")
         self.assertEqual(source, "停电记录id")
 
+    def test_exported_primary_key_is_record_id_alias(self):
+        key, source = database._record_key({"主键": "PK-1"}, self.started)
+        self.assertEqual(key, "record:PK-1")
+        self.assertEqual(source, "停电记录id")
+
     def test_event_and_user_are_second_priority(self):
         key, source = database._record_key({"事件id": "E-1", "用户id": "U-1"}, self.started)
         self.assertEqual(key, "event-user:E-1|U-1")
@@ -38,4 +43,3 @@ class DatabaseKeyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
