@@ -2843,8 +2843,8 @@ def main() -> int:
     # 步骤 1：读取数据
     # ============================================================
     def _load():
-        df = pd.read_excel(input_path, sheet_name=0)
-        print(f"  已读取：{len(df)} 行")
+        df = read_excel_all_sheets(input_path)
+        print(f"  已读取全部 Sheet：{len(df)} 行")
         return df
 
     raw = runner.run("读取停电数据", _load)

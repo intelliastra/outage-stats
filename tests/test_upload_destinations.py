@@ -15,6 +15,13 @@ class UploadDestinationTest(unittest.TestCase):
         self.assertIn('match(/[?&]dest=([^&#]+)/)', source)
         self.assertIn('decodeURIComponent(destination[1])', source)
 
+    def test_external_damage_script_reads_all_sheets(self):
+        source = (
+            ROOT / "统计材料" / "运行脚本" / "exclude_external_damage_v1.0.0.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("df = read_excel_all_sheets(input_path)", source)
+        self.assertNotIn("df = pd.read_excel(input_path, sheet_name=0)", source)
+
 
 if __name__ == "__main__":
     unittest.main()
