@@ -235,8 +235,8 @@
       warningParts.push(`缺失日期 ${data.missing_dates.length} 天（激活后按 0 条处理）`);
     }
     const validation = data.validation || {};
-    if (validation.duplicate_keys && validation.duplicate_keys.length) {
-      warningParts.push(`重复键 ${validation.duplicate_keys.length} 个，禁止激活`);
+    if (validation.duplicate_key_count) {
+      warningParts.push(`重复键 ${validation.duplicate_key_count} 个，禁止激活`);
     }
     if (validation.errors && validation.errors.length) {
       warningParts.push(`校验错误 ${validation.errors.length} 条，禁止激活`);
