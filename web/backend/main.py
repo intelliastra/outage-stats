@@ -632,6 +632,42 @@ def _job_payload(job, *, include_logs: bool = False) -> dict:
     return payload
 
 
+def _persisted_job_payload(row: dict, *, include_logs: bool = False) -> dict:
+    outputs = row.get("output_files") or {}
+
+    def read_summary(key: str) -> str:
+        path_text = outputs.get(key)
+        if not path_text:
+            return ""
+        path = validate_output_path(path_text, OUTPUT_BASE)
+        if not path or not path.is_file() or path.suffix.lower() != ".txt":
+            return ""
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+    parameters = row.get("parameters") or {}
+    payload = {
+        "job_id": row["job_id"],
+        "status": row["status"],
+        "kind": parameters.get("kind", "daily"),
+        "exit_code": 0 if row["status"] == "success" else 1,
+        "summary_simple": read_summary("summary_simple"),
+        "summary_full": read_summary("summary_full"),
+        "files": outputs,
+        "created_at": row["created_at"].timestamp() if row.get("created_at") else None,
+        "finished_at": row["finished_at"].timestamp() if row.get("finished_at") else None,
+        "duration_seconds": float(row["elapsed_seconds"]) if row.get("elapsed_seconds") is not None else None,
+        "expected_seconds": job_manager.expected_seconds(parameters.get("kind", "daily")),
+        "busy": job_manager.is_busy(),
+        "persisted": True,
+    }
+    if include_logs:
+        payload["logs"] = row.get("error_message") or ""
+    return payload
+
+
 @app.get("/api/timing")
 def get_timing():
     """Last successful run durations used for progress ETA."""
@@ -648,8 +684,18 @@ def get_latest_job(
         raise HTTPException(status_code=400, detail="kind 仅支持 daily、historical 或 exclude")
     job = job_manager.get_latest_job(kind=kind)
     running = job_manager.get_latest_job()
+    persisted = None
+    if job is None:
+        try:
+            persisted = database.get_latest_report_run(kind)
+        except Exception:
+            persisted = None
     return {
-        "job": _job_payload(job, include_logs=include_logs) if job else None,
+        "job": (
+            _job_payload(job, include_logs=include_logs)
+            if job else _persisted_job_payload(persisted, include_logs=include_logs)
+            if persisted else None
+        ),
         "busy": job_manager.is_busy(),
         "running_kind": running.kind if running and running.status.value in ("running", "pending") else None,
     }
@@ -659,7 +705,13 @@ def get_latest_job(
 def get_job(job_id: str, include_logs: bool = Query(False)):
     job = job_manager.get_job(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="任务不存在")
+        try:
+            persisted = database.get_report_run(job_id)
+        except Exception:
+            persisted = None
+        if not persisted:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        return _persisted_job_payload(persisted, include_logs=include_logs)
     return _job_payload(job, include_logs=include_logs)
 
 
@@ -712,15 +764,24 @@ def download_file(job_id: str, file_key: str):
         raise HTTPException(status_code=400, detail="无效的文件类型")
 
     job = job_manager.get_job(job_id)
+    persisted = None
     if not job:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    if job.status != JobStatus.SUCCESS:
+        try:
+            persisted = database.get_report_run(job_id)
+        except Exception:
+            persisted = None
+        if not persisted:
+            raise HTTPException(status_code=404, detail="任务不存在")
+    status = job.status.value if job else persisted["status"]
+    if status != JobStatus.SUCCESS.value:
         raise HTTPException(status_code=400, detail="任务未成功完成，无法下载")
 
-    if file_key == "all":
-        return _download_all_zip(job)
+    output_files = job.result.output_files if job else (persisted.get("output_files") or {})
 
-    file_path_str = job.result.output_files.get(file_key)
+    if file_key == "all":
+        return _download_all_zip(job_id, output_files)
+
+    file_path_str = output_files.get(file_key)
     if not file_path_str:
         raise HTTPException(status_code=404, detail="未找到输出文件路径")
 
@@ -740,10 +801,10 @@ def download_file(job_id: str, file_key: str):
     )
 
 
-def _download_all_zip(job) -> FileResponse:
+def _download_all_zip(job_id: str, output_files: dict[str, str]) -> FileResponse:
     files: list[tuple[str, Path]] = []
     for key in ("result", "publish", "stats", "summary_simple", "summary_full"):
-        path_str = job.result.output_files.get(key)
+        path_str = output_files.get(key)
         if not path_str:
             continue
         validated = validate_output_path(path_str, OUTPUT_BASE)
@@ -756,7 +817,7 @@ def _download_all_zip(job) -> FileResponse:
     download_tmp = STATS_BASE / ".download_tmp"
     download_tmp.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(
-        prefix=f"outage-stats-{job.id[:8]}-",
+        prefix=f"outage-stats-{job_id[:8]}-",
         suffix=".zip",
         dir=download_tmp,
         delete=False,
@@ -773,7 +834,7 @@ def _download_all_zip(job) -> FileResponse:
         zip_path.unlink(missing_ok=True)
         raise
 
-    zip_name = f"outage-stats-{job.id[:8]}.zip"
+    zip_name = f"outage-stats-{job_id[:8]}.zip"
     return FileResponse(
         path=str(zip_path),
         filename=zip_name,

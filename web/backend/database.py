@@ -772,3 +772,28 @@ def update_report_run(
             ),
         )
         conn.commit()
+
+
+def get_report_run(job_id: str) -> dict[str, Any] | None:
+    if not DB_ENABLED:
+        return None
+    with connection() as conn:
+        row = conn.execute("SELECT * FROM report_run WHERE job_id=%s", (job_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_latest_report_run(kind: str | None = None) -> dict[str, Any] | None:
+    if not DB_ENABLED:
+        return None
+    with connection() as conn:
+        if kind:
+            row = conn.execute(
+                "SELECT * FROM report_run WHERE parameters->>'kind'=%s "
+                "ORDER BY created_at DESC LIMIT 1",
+                (kind,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM report_run ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+    return dict(row) if row else None

@@ -298,7 +298,11 @@ class JobManager:
             job = Job(
                 id=job_id,
                 kind="daily",
-                parameters={"activation_id": effective_activation, "data_backend": database.DATA_BACKEND},
+                parameters={
+                    "kind": "daily",
+                    "activation_id": effective_activation,
+                    "data_backend": database.DATA_BACKEND,
+                },
             )
             self.jobs[job_id] = job
             self._running_job_id = job_id
@@ -337,7 +341,17 @@ class JobManager:
                 return None, f"脚本不存在：{self.historical_script_path}"
 
             job_id = str(uuid.uuid4())
-            job = Job(id=job_id, kind="historical")
+            job = Job(
+                id=job_id,
+                kind="historical",
+                parameters={
+                    "kind": "historical",
+                    "data_year": data_year,
+                    "period_start": period_start.isoformat(),
+                    "period_end": period_end.isoformat(),
+                    "data_backend": database.DATA_BACKEND,
+                },
+            )
             self.jobs[job_id] = job
             self._running_job_id = job_id
 
@@ -362,6 +376,15 @@ class JobManager:
             if exclude_2026_file is not None:
                 cmd.extend(["--exclude-2026-file", str(exclude_2026_file)])
 
+            try:
+                database.create_report_run(job_id, job.parameters)
+            except Exception as exc:
+                if database.DATA_BACKEND == "postgres":
+                    self.jobs.pop(job_id, None)
+                    self._running_job_id = None
+                    return None, f"无法创建数据库任务记录：{exc}"
+                job.append_log(f"[DB] 影子任务记录失败，继续运行：{exc}\n")
+
         thread = threading.Thread(target=self._run_script, args=(job, cmd), daemon=True)
         thread.start()
         return job, None
@@ -380,7 +403,15 @@ class JobManager:
                 return None, f"输入文件不存在：{input_path}"
 
             job_id = str(uuid.uuid4())
-            job = Job(id=job_id, kind="exclude")
+            job = Job(
+                id=job_id,
+                kind="exclude",
+                parameters={
+                    "kind": "exclude",
+                    "input_filename": input_path.name,
+                    "data_backend": database.DATA_BACKEND,
+                },
+            )
             self.jobs[job_id] = job
             self._running_job_id = job_id
             cmd = [
@@ -390,6 +421,15 @@ class JobManager:
                 str(input_path),
                 "--non-interactive",
             ]
+
+            try:
+                database.create_report_run(job_id, job.parameters)
+            except Exception as exc:
+                if database.DATA_BACKEND == "postgres":
+                    self.jobs.pop(job_id, None)
+                    self._running_job_id = None
+                    return None, f"无法创建数据库任务记录：{exc}"
+                job.append_log(f"[DB] 影子任务记录失败，继续运行：{exc}\n")
 
         thread = threading.Thread(target=self._run_script, args=(job, cmd), daemon=True)
         thread.start()
