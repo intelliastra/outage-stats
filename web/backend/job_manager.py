@@ -20,7 +20,7 @@ from enum import Enum
 from pathlib import Path
 from typing import AsyncIterator
 
-from log_parser import ParsedResult, parse_exclude_output, parse_script_output
+from log_parser import ParsedResult, parse_exclude_output, parse_script_output, validate_output_path
 
 import database
 
@@ -264,6 +264,23 @@ class JobManager:
 
         for key, path in discovered.items():
             result.output_files.setdefault(key, path)
+
+    def get_report_comparison(self, outputs: dict[str, str]) -> dict | None:
+        result_path = outputs.get("result")
+        if not result_path:
+            return None
+        valid = validate_output_path(result_path, self.daily_output_base)
+        if valid is None:
+            return None
+        sidecar = validate_output_path(
+            str(valid.with_name(f"{valid.stem}_比较.json")), self.daily_output_base
+        )
+        if sidecar is None:
+            return None
+        try:
+            return json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
 
     def is_busy(self) -> bool:
         return self._running_job_id is not None
@@ -623,4 +640,6 @@ class JobManager:
             "duration_seconds": duration,
             "expected_seconds": self.expected_seconds(job.kind),
         }
+        if job.kind == "daily" and job.status == JobStatus.SUCCESS:
+            payload["comparison"] = self.get_report_comparison(job.result.output_files)
         return f"event: done\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"

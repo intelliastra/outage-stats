@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-web-version="20260912c">
+<html lang="zh-CN" data-web-version="20260916a">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,7 +9,7 @@
       location.replace("https://" + location.host + location.pathname + location.search + location.hash);
     }
   </script>
-  <link rel="stylesheet" href="css/gov-theme.css?v=20260912c">
+  <link rel="stylesheet" href="css/gov-theme.css?v=20260916a">
 </head>
 <body>
   <header class="gov-topbar">
@@ -39,7 +39,7 @@
                 选择文件
                 <input id="fileInput" type="file" accept=".xlsx,.xls" hidden>
               </label>
-              <p class="hint">上传停电用户 Excel 数据文件，脚本将按月累计统计频繁停电用户清单。单文件不超过 150MB。</p>
+              <p class="hint">请先在日常统计页上传，再在此上传同一份未经手工删行的停电用户表。运行时自动剔除 AE 列责任原因代码以 513、514、515 开头的行；表11重大事件日配置仍独立生效。单文件不超过 150MB。</p>
             </div>
             <ul id="uploadList" class="upload-list"></ul>
             <div class="gov-info-strip" id="dataInfo">
@@ -114,7 +114,7 @@
     </div>
   </div>
 
-  <script src="js/common.js?v=20260912c"></script>
-  <script src="js/exclude.js?v=20260912c"></script>
+  <script src="js/common.js?v=20260916a"></script>
+  <script src="js/exclude.js?v=20260916a"></script>
 </body>
 </html>

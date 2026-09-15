@@ -46,6 +46,7 @@ MAJOR_EVENT_FILE_PATH  = ""  # 额外 2026 重大事件日文件（txt/csv/xlsx�
 # ============================================================
 
 import argparse
+import hashlib
 import os
 import re
 import sys
@@ -61,6 +62,11 @@ import pandas as pd
 
 from report_io import write_tables_streaming
 from postgres_source import load_active_records
+from statistics_priority import (
+    RULE_VERSION, FREQUENT_RULES, WARNING_RULES, classify_text,
+    classify_entity_groups, official_section,
+)
+from external_damage_filter import exclude_external_damage_rows
 
 
 RAW_ADDED_COLUMNS = ["用户停电总次数", "是否统计", "不统计原因", "频繁停电类型", "停电预警类型"]
@@ -200,41 +206,12 @@ def classify_line_category(
     if str(row.get("是否频繁停", "")).strip() == "是":
         return "频繁停电"
 
-    warning_type = str(
-        row.get("停电预警类型", "")
-    )
-
-    # =========================
-    # 第二优先级：一年4-5次
-    # =========================
-    if "一年内停电4-5次" in warning_type:
-        return "一年4-5次"
-
-    # =========================
-    # 第三优先级：50天3次
-    # =========================
-    if "近50天停电3次" in warning_type:
-        return "50天3次"
-
-    # =========================
-    # 第四优先级：30天2次
-    # =========================
-    if "近30天停电2次" in warning_type:
-        return "30天2次"
-
-    return ""
+    return classify_text(row.get("停电预警类型", ""), WARNING_RULES)
 
 
 def classify_warning_category(type_str: str) -> str:
     """对用户/线路停电预警类型按优先级做互斥分类。"""
-    warning_type = str(type_str or "")
-    if "一年内停电4-5次" in warning_type:
-        return "一年4-5次"
-    if "近50天停电3次" in warning_type:
-        return "50天3次"
-    if "近30天停电2次" in warning_type:
-        return "30天2次"
-    return ""
+    return classify_text(type_str, WARNING_RULES)
 
 
 def _stats_dict_total(count_by_city: dict[str, int]) -> int:
@@ -2284,142 +2261,41 @@ def _warning_user_category_row(row: pd.Series) -> str:
 
 def compute_2026_stats_dicts(tables_2026: dict[str, pd.DataFrame]) -> list[dict[str, int]]:
     """计算 2026 年统计表 B~U 列对应的地市计数字典，合计列均为子列之和。"""
-    city_col = "所属地市"
-
-    wu_45 = _count_by_city_exclusive(
-        tables_2026["停电预警用户清单"], city_col, _warning_user_category_row, "一年4-5次"
+    user_groups = classify_entity_groups(
+        tables_2026["频繁停电用户清单"], tables_2026["停电预警用户清单"],
+        key_column="用户编码",
     )
-    wu_50 = _count_by_city_exclusive(
-        tables_2026["停电预警用户清单"], city_col, _warning_user_category_row, "50天3次"
+    line_groups = classify_entity_groups(
+        tables_2026["频繁停电线路清单"], tables_2026["停电预警线路清单"],
+        key_column="所属馈线编码",
     )
-    wu_30 = _count_by_city_exclusive(
-        tables_2026["停电预警用户清单"], city_col, _warning_user_category_row, "30天2次"
+    nea_groups = classify_entity_groups(
+        tables_2026["频繁停电线路清单"], tables_2026["停电预警线路清单"],
+        key_column="所属馈线编码", nea_only=True,
     )
-    wu_tot = _sum_city_dicts(wu_45, wu_50, wu_30)
-
-    wl_45 = _count_by_city_exclusive(
-        tables_2026["停电预警线路清单"], city_col, _warning_line_category_row, "一年4-5次"
+    warning_labels = tuple(name for _, name in reversed(WARNING_RULES))
+    frequent_labels = tuple(name for _, name in FREQUENT_RULES)
+    return (
+        official_section(user_groups, "warning", warning_labels)
+        + official_section(line_groups, "warning", warning_labels)
+        + official_section(user_groups, "frequent", frequent_labels)
+        + official_section(line_groups, "frequent", frequent_labels)
+        + official_section(nea_groups, "frequent", frequent_labels)
     )
-    wl_50 = _count_by_city_exclusive(
-        tables_2026["停电预警线路清单"], city_col, _warning_line_category_row, "50天3次"
-    )
-    wl_30 = _count_by_city_exclusive(
-        tables_2026["停电预警线路清单"], city_col, _warning_line_category_row, "30天2次"
-    )
-    wl_tot = _sum_city_dicts(wl_45, wl_50, wl_30)
-
-    fu_5 = _count_by_city(
-        tables_2026["频繁停电用户清单"], city_col, "频繁停电类型", "一年内停电次数超过5次"
-    )
-    fu_60 = _count_by_city(
-        tables_2026["频繁停电用户清单"], city_col, "频繁停电类型", "连续60天停电次数超过3次"
-    )
-    fu_pre = _count_by_city(
-        tables_2026["频繁停电用户清单"], city_col, "频繁停电类型", "一年内预安排停电次数超过3次"
-    )
-    fu_tot = _sum_city_dicts(fu_5, fu_60, fu_pre)
-
-    fl_5 = _count_by_city(
-        tables_2026["频繁停电线路清单"], city_col, "频繁停电类型", "一年内停电次数超过5次"
-    )
-    fl_60 = _count_by_city(
-        tables_2026["频繁停电线路清单"], city_col, "频繁停电类型", "连续60天停电次数超过3次"
-    )
-    fl_pre = _count_by_city(
-        tables_2026["频繁停电线路清单"], city_col, "频繁停电类型", "一年内预安排停电次数超过3次"
-    )
-    fl_tot = _count_by_city(
-        tables_2026["频繁停电线路清单"], city_col, None, None
-    )
-
-    fn_5 = _count_by_city(
-        tables_2026["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "一年内停电次数超过5次",
-        nea_only=True,
-    )
-    fn_60 = _count_by_city(
-        tables_2026["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "连续60天停电次数超过3次",
-        nea_only=True,
-    )
-    fn_pre = _count_by_city(
-        tables_2026["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "一年内预安排停电次数超过3次",
-        nea_only=True,
-    )
-    fn_tot = _count_by_city(
-        tables_2026["频繁停电线路清单"], city_col, None, None, nea_only=True
-    )
-
-    return [
-        wu_45, wu_50, wu_30, wu_tot,
-        wl_45, wl_50, wl_30, wl_tot,
-        fu_5, fu_60, fu_pre, fu_tot,
-        fl_5, fl_60, fl_pre, fl_tot,
-        fn_5, fn_60, fn_pre, fn_tot,
-    ]
 
 
 def compute_2025_stats_dicts(tables_2025: dict[str, pd.DataFrame]) -> list[dict[str, int]]:
     """计算 2025 年统计表 B~M 列对应的地市计数字典，合计列均为子列之和。"""
-    city_col = "所属地市"
-
-    fu_5 = _count_by_city(
-        tables_2025["频繁停电用户清单"], city_col, "频繁停电类型", "一年内停电次数超过5次"
+    empty = pd.DataFrame()
+    labels = tuple(name for _, name in FREQUENT_RULES)
+    user_groups = classify_entity_groups(tables_2025["频繁停电用户清单"], empty, key_column="用户编码")
+    line_groups = classify_entity_groups(tables_2025["频繁停电线路清单"], empty, key_column="所属馈线编码")
+    nea_groups = classify_entity_groups(tables_2025["频繁停电线路清单"], empty, key_column="所属馈线编码", nea_only=True)
+    return (
+        official_section(user_groups, "frequent", labels)
+        + official_section(line_groups, "frequent", labels)
+        + official_section(nea_groups, "frequent", labels)
     )
-    fu_60 = _count_by_city(
-        tables_2025["频繁停电用户清单"], city_col, "频繁停电类型", "连续60天停电次数超过3次"
-    )
-    fu_pre = _count_by_city(
-        tables_2025["频繁停电用户清单"], city_col, "频繁停电类型", "一年内预安排停电次数超过3次"
-    )
-    fu_tot = _sum_city_dicts(fu_5, fu_60, fu_pre)
-
-    fl_5 = _count_by_city(
-        tables_2025["频繁停电线路清单"], city_col, "频繁停电类型", "一年内停电次数超过5次"
-    )
-    fl_60 = _count_by_city(
-        tables_2025["频繁停电线路清单"], city_col, "频繁停电类型", "连续60天停电次数超过3次"
-    )
-    fl_pre = _count_by_city(
-        tables_2025["频繁停电线路清单"], city_col, "频繁停电类型", "一年内预安排停电次数超过3次"
-    )
-    fl_tot = _sum_city_dicts(fl_5, fl_60, fl_pre)
-
-    fn_5 = _count_by_city(
-        tables_2025["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "一年内停电次数超过5次",
-        nea_only=True,
-    )
-    fn_60 = _count_by_city(
-        tables_2025["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "连续60天停电次数超过3次",
-        nea_only=True,
-    )
-    fn_pre = _count_by_city(
-        tables_2025["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "一年内预安排停电次数超过3次",
-        nea_only=True,
-    )
-    fn_tot = _sum_city_dicts(fn_5, fn_60, fn_pre)
-
-    return [
-        fu_5, fu_60, fu_pre, fu_tot,
-        fl_5, fl_60, fl_pre, fl_tot,
-        fn_5, fn_60, fn_pre, fn_tot,
-    ]
 
 
 def generate_statistics_table(
@@ -2617,10 +2493,12 @@ def read_excel_all_sheets(file_path: Path) -> pd.DataFrame:
         xf = pd.ExcelFile(file_path)
         for sheet_name in xf.sheet_names:
             try:
-                df = pd.read_excel(file_path, sheet_name=sheet_name, dtype=str)
+                df = pd.read_excel(xf, sheet_name=sheet_name, dtype=str)
                 if df.empty:
                     continue
                 df.columns = [str(c).strip() for c in df.columns]
+                if len(df.columns) <= 30 or df.columns[30] != "责任原因代码":
+                    raise ValueError(f"Sheet [{sheet_name}] AE列不是“责任原因代码”")
                 for col in ["工单号", "用户编码", "所属馈线编码"]:
                     if col in df.columns:
                         df[col] = (
@@ -2630,9 +2508,12 @@ def read_excel_all_sheets(file_path: Path) -> pd.DataFrame:
                 all_data.append(df)
                 print(f"    Sheet [{sheet_name}]：{len(df)} 行")
             except Exception as exc:
-                print(f"    Sheet [{sheet_name}] 读取失败：{exc}", file=sys.stderr)
+                raise ValueError(f"Sheet [{sheet_name}] 读取或列校验失败：{exc}") from exc
     except Exception as exc:
         raise RuntimeError(f"文件读取失败 [{file_path.name}]：{exc}") from exc
+    finally:
+        if "xf" in locals():
+            xf.close()
 
     if not all_data:
         raise ValueError(f"Newdata 文件中未读取到任何有效数据：{file_path}")
@@ -2851,6 +2732,16 @@ def main() -> int:
     if raw is None or raw.empty:
         print("[ERR]  数据读取失败或为空，程序终止", file=sys.stderr)
         return 1
+    raw, filter_counts = exclude_external_damage_rows(raw)
+    input_sha256 = hashlib.sha256(input_path.read_bytes()).hexdigest()
+    print(f"  原始文件 SHA-256：{input_sha256}")
+    print(
+        "  外力原因过滤：原始 {original_rows}，513* {removed_513}，"
+        "514* {removed_514}，515* {removed_515}，合计剔除 {removed_total}，"
+        "剩余 {remaining_rows}，空代码 {blank_code_rows}".format(**filter_counts)
+    )
+    if raw.empty:
+        raise ValueError("外力原因过滤后没有剩余用户记录")
 
     # ============================================================
     # 确定月份范围
@@ -2974,6 +2865,12 @@ def main() -> int:
     if not all_monthly_tables:
         print("[ERR]  所有月份均无频繁停电数据，未生成输出文件", file=sys.stderr)
         return 1
+    all_monthly_tables["外力过滤说明"] = pd.DataFrame(
+        [("原始文件SHA-256", input_sha256)]
+        + [(name, value) for name, value in filter_counts.items()]
+        + [("统计规则版本", RULE_VERSION)],
+        columns=["项目", "值"],
+    )
 
     def _write_output():
         write_tables(all_monthly_tables, output_path)

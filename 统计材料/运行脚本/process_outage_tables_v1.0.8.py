@@ -47,6 +47,7 @@ MAJOR_EVENT_FILE_PATH  = ""  # 额外 2026 重大事件日文件（txt/csv/xlsx�
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
@@ -62,6 +63,11 @@ import pandas as pd
 
 from report_io import write_tables_streaming, write_text_atomic
 from postgres_source import load_active_records
+from statistics_priority import (
+    RULE_VERSION, FREQUENT_RULES, WARNING_RULES, classify_text,
+    classify_entity_groups, official_section,
+)
+from report_comparison import compare_reports
 
 
 RAW_ADDED_COLUMNS = ["用户停电总次数", "是否统计", "不统计原因", "频繁停电类型", "停电预警类型"]
@@ -252,41 +258,12 @@ def classify_line_category(
     if str(row.get("是否频繁停", "")).strip() == "是":
         return "频繁停电"
 
-    warning_type = str(
-        row.get("停电预警类型", "")
-    )
-
-    # =========================
-    # 第二优先级：一年4-5次
-    # =========================
-    if "一年内停电4-5次" in warning_type:
-        return "一年4-5次"
-
-    # =========================
-    # 第三优先级：50天3次
-    # =========================
-    if "近50天停电3次" in warning_type:
-        return "50天3次"
-
-    # =========================
-    # 第四优先级：30天2次
-    # =========================
-    if "近30天停电2次" in warning_type:
-        return "30天2次"
-
-    return ""
+    return classify_text(row.get("停电预警类型", ""), WARNING_RULES)
 
 
 def classify_warning_category(type_str: str) -> str:
     """对用户/线路停电预警类型按优先级做互斥分类。"""
-    warning_type = str(type_str or "")
-    if "一年内停电4-5次" in warning_type:
-        return "一年4-5次"
-    if "近50天停电3次" in warning_type:
-        return "50天3次"
-    if "近30天停电2次" in warning_type:
-        return "30天2次"
-    return ""
+    return classify_text(type_str, WARNING_RULES)
 
 
 def _stats_dict_total(count_by_city: dict[str, int]) -> int:
@@ -1903,11 +1880,14 @@ def build_publish_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFr
             raw_statistics["是否统计"].astype(str).str.strip().eq("是")
         ].copy()
 
-    return {
+    published = {
         "用户停电总次数统计表": raw_statistics,
         "停电预警线路清单": tables["停电预警线路清单"].copy(),
         "停电预警线路清单（累计）": tables["停电预警线路清单（累计）"].copy(),
     }
+    if "变化明细" in tables:
+        published["变化明细"] = tables["变化明细"].copy()
+    return published
 
 
 def default_publish_output_path(output_path: Path) -> Path:
@@ -2000,20 +1980,18 @@ def read_2025_raw(file_path: str) -> pd.DataFrame:
         raise FileNotFoundError(f"2025 年数据文件不存在：{target}")
 
     print(f"  读取 2025 年数据文件：{target.name}")
-    xf = pd.ExcelFile(target)
-
-    best_sheet, best_cols = xf.sheet_names[0], 0
-    for sheet_name in xf.sheet_names:
-        try:
-            preview = pd.read_excel(target, sheet_name=sheet_name, nrows=2, dtype=str)
-            if len(preview.columns) > best_cols:
-                best_cols = len(preview.columns)
-                best_sheet = sheet_name
-        except Exception:
-            pass
-
-    print(f"  读取 Sheet：{best_sheet}（{best_cols} 列）")
-    df = pd.read_excel(target, sheet_name=best_sheet, dtype=str)
+    with pd.ExcelFile(target) as xf:
+        best_sheet, best_cols = xf.sheet_names[0], 0
+        for sheet_name in xf.sheet_names:
+            try:
+                preview = pd.read_excel(xf, sheet_name=sheet_name, nrows=2, dtype=str)
+                if len(preview.columns) > best_cols:
+                    best_cols = len(preview.columns)
+                    best_sheet = sheet_name
+            except Exception:
+                pass
+        print(f"  读取 Sheet：{best_sheet}（{best_cols} 列）")
+        df = pd.read_excel(xf, sheet_name=best_sheet, dtype=str)
     return df.dropna(how="all").reset_index(drop=True)
 
 
@@ -2390,142 +2368,41 @@ def _warning_user_category_row(row: pd.Series) -> str:
 
 def compute_2026_stats_dicts(tables_2026: dict[str, pd.DataFrame]) -> list[dict[str, int]]:
     """计算 2026 年统计表 B~U 列对应的地市计数字典，合计列均为子列之和。"""
-    city_col = "所属地市"
-
-    wu_45 = _count_by_city_exclusive(
-        tables_2026["停电预警用户清单"], city_col, _warning_user_category_row, "一年4-5次"
+    user_groups = classify_entity_groups(
+        tables_2026["频繁停电用户清单"], tables_2026["停电预警用户清单"],
+        key_column="用户编码",
     )
-    wu_50 = _count_by_city_exclusive(
-        tables_2026["停电预警用户清单"], city_col, _warning_user_category_row, "50天3次"
+    line_groups = classify_entity_groups(
+        tables_2026["频繁停电线路清单"], tables_2026["停电预警线路清单"],
+        key_column="所属馈线编码",
     )
-    wu_30 = _count_by_city_exclusive(
-        tables_2026["停电预警用户清单"], city_col, _warning_user_category_row, "30天2次"
+    nea_groups = classify_entity_groups(
+        tables_2026["频繁停电线路清单"], tables_2026["停电预警线路清单"],
+        key_column="所属馈线编码", nea_only=True,
     )
-    wu_tot = _sum_city_dicts(wu_45, wu_50, wu_30)
-
-    wl_45 = _count_by_city_exclusive(
-        tables_2026["停电预警线路清单"], city_col, _warning_line_category_row, "一年4-5次"
+    warning_labels = tuple(name for _, name in reversed(WARNING_RULES))
+    frequent_labels = tuple(name for _, name in FREQUENT_RULES)
+    return (
+        official_section(user_groups, "warning", warning_labels)
+        + official_section(line_groups, "warning", warning_labels)
+        + official_section(user_groups, "frequent", frequent_labels)
+        + official_section(line_groups, "frequent", frequent_labels)
+        + official_section(nea_groups, "frequent", frequent_labels)
     )
-    wl_50 = _count_by_city_exclusive(
-        tables_2026["停电预警线路清单"], city_col, _warning_line_category_row, "50天3次"
-    )
-    wl_30 = _count_by_city_exclusive(
-        tables_2026["停电预警线路清单"], city_col, _warning_line_category_row, "30天2次"
-    )
-    wl_tot = _sum_city_dicts(wl_45, wl_50, wl_30)
-
-    fu_5 = _count_by_city(
-        tables_2026["频繁停电用户清单"], city_col, "频繁停电类型", "一年内停电次数超过5次"
-    )
-    fu_60 = _count_by_city(
-        tables_2026["频繁停电用户清单"], city_col, "频繁停电类型", "连续60天停电次数超过3次"
-    )
-    fu_pre = _count_by_city(
-        tables_2026["频繁停电用户清单"], city_col, "频繁停电类型", "一年内预安排停电次数超过3次"
-    )
-    fu_tot = _sum_city_dicts(fu_5, fu_60, fu_pre)
-
-    fl_5 = _count_by_city(
-        tables_2026["频繁停电线路清单"], city_col, "频繁停电类型", "一年内停电次数超过5次"
-    )
-    fl_60 = _count_by_city(
-        tables_2026["频繁停电线路清单"], city_col, "频繁停电类型", "连续60天停电次数超过3次"
-    )
-    fl_pre = _count_by_city(
-        tables_2026["频繁停电线路清单"], city_col, "频繁停电类型", "一年内预安排停电次数超过3次"
-    )
-    fl_tot = _count_by_city(
-        tables_2026["频繁停电线路清单"], city_col, None, None
-    )
-
-    fn_5 = _count_by_city(
-        tables_2026["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "一年内停电次数超过5次",
-        nea_only=True,
-    )
-    fn_60 = _count_by_city(
-        tables_2026["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "连续60天停电次数超过3次",
-        nea_only=True,
-    )
-    fn_pre = _count_by_city(
-        tables_2026["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "一年内预安排停电次数超过3次",
-        nea_only=True,
-    )
-    fn_tot = _count_by_city(
-        tables_2026["频繁停电线路清单"], city_col, None, None, nea_only=True
-    )
-
-    return [
-        wu_45, wu_50, wu_30, wu_tot,
-        wl_45, wl_50, wl_30, wl_tot,
-        fu_5, fu_60, fu_pre, fu_tot,
-        fl_5, fl_60, fl_pre, fl_tot,
-        fn_5, fn_60, fn_pre, fn_tot,
-    ]
 
 
 def compute_2025_stats_dicts(tables_2025: dict[str, pd.DataFrame]) -> list[dict[str, int]]:
     """计算 2025 年统计表 B~M 列对应的地市计数字典，合计列均为子列之和。"""
-    city_col = "所属地市"
-
-    fu_5 = _count_by_city(
-        tables_2025["频繁停电用户清单"], city_col, "频繁停电类型", "一年内停电次数超过5次"
+    empty = pd.DataFrame()
+    labels = tuple(name for _, name in FREQUENT_RULES)
+    user_groups = classify_entity_groups(tables_2025["频繁停电用户清单"], empty, key_column="用户编码")
+    line_groups = classify_entity_groups(tables_2025["频繁停电线路清单"], empty, key_column="所属馈线编码")
+    nea_groups = classify_entity_groups(tables_2025["频繁停电线路清单"], empty, key_column="所属馈线编码", nea_only=True)
+    return (
+        official_section(user_groups, "frequent", labels)
+        + official_section(line_groups, "frequent", labels)
+        + official_section(nea_groups, "frequent", labels)
     )
-    fu_60 = _count_by_city(
-        tables_2025["频繁停电用户清单"], city_col, "频繁停电类型", "连续60天停电次数超过3次"
-    )
-    fu_pre = _count_by_city(
-        tables_2025["频繁停电用户清单"], city_col, "频繁停电类型", "一年内预安排停电次数超过3次"
-    )
-    fu_tot = _sum_city_dicts(fu_5, fu_60, fu_pre)
-
-    fl_5 = _count_by_city(
-        tables_2025["频繁停电线路清单"], city_col, "频繁停电类型", "一年内停电次数超过5次"
-    )
-    fl_60 = _count_by_city(
-        tables_2025["频繁停电线路清单"], city_col, "频繁停电类型", "连续60天停电次数超过3次"
-    )
-    fl_pre = _count_by_city(
-        tables_2025["频繁停电线路清单"], city_col, "频繁停电类型", "一年内预安排停电次数超过3次"
-    )
-    fl_tot = _sum_city_dicts(fl_5, fl_60, fl_pre)
-
-    fn_5 = _count_by_city(
-        tables_2025["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "一年内停电次数超过5次",
-        nea_only=True,
-    )
-    fn_60 = _count_by_city(
-        tables_2025["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "连续60天停电次数超过3次",
-        nea_only=True,
-    )
-    fn_pre = _count_by_city(
-        tables_2025["频繁停电线路清单"],
-        city_col,
-        "频繁停电类型",
-        "一年内预安排停电次数超过3次",
-        nea_only=True,
-    )
-    fn_tot = _sum_city_dicts(fn_5, fn_60, fn_pre)
-
-    return [
-        fu_5, fu_60, fu_pre, fu_tot,
-        fl_5, fl_60, fl_pre, fl_tot,
-        fn_5, fn_60, fn_pre, fn_tot,
-    ]
 
 
 def generate_statistics_table(
@@ -2723,7 +2600,7 @@ def read_excel_all_sheets(file_path: Path) -> pd.DataFrame:
         xf = pd.ExcelFile(file_path)
         for sheet_name in xf.sheet_names:
             try:
-                df = pd.read_excel(file_path, sheet_name=sheet_name, dtype=str)
+                df = pd.read_excel(xf, sheet_name=sheet_name, dtype=str)
                 if df.empty:
                     continue
                 df.columns = [str(c).strip() for c in df.columns]
@@ -2739,6 +2616,9 @@ def read_excel_all_sheets(file_path: Path) -> pd.DataFrame:
                 print(f"    Sheet [{sheet_name}] 读取失败：{exc}", file=sys.stderr)
     except Exception as exc:
         raise RuntimeError(f"文件读取失败 [{file_path.name}]：{exc}") from exc
+    finally:
+        if "xf" in locals():
+            xf.close()
 
     if not all_data:
         raise ValueError(f"Newdata 文件中未读取到任何有效数据：{file_path}")
@@ -2753,10 +2633,23 @@ def read_folder_raw_data(folder_path: str, *, non_interactive: bool = False) -> 
         raise FileNotFoundError(f"Newdata 文件夹不存在：{folder}")
 
     selected_file = select_newdata_file(folder, non_interactive=non_interactive)
-    return read_excel_all_sheets(selected_file)
+    data = read_excel_all_sheets(selected_file)
+    data.attrs["source_file"] = str(selected_file)
+    return data
 
 
-def _find_valid_result_file(search_dir: Path) -> Path | None:
+def _daily_report_set_complete(result_path: Path) -> bool:
+    stem = result_path.stem.replace("停电用户_处理结果", "")
+    required = (
+        result_path.with_name(f"{stem}停电用户_处理结果_发出版.xlsx"),
+        result_path.with_name(f"{stem}统计表.xlsx"),
+        result_path.with_name(f"{stem}停电摘要（简版）.txt"),
+        result_path.with_name(f"{stem}停电摘要（全量版）.txt"),
+    )
+    return all(path.is_file() and path.stat().st_size > 0 for path in required)
+
+
+def _find_valid_result_file(search_dir: Path, *, require_complete: bool = False) -> Path | None:
     """在目录中查找最新且有效的 *_处理结果.xlsx（排除发出版、空文件）。"""
     candidates = [
         f
@@ -2765,6 +2658,7 @@ def _find_valid_result_file(search_dir: Path) -> Path | None:
         and "发出版" not in f.name
         and not f.name.startswith("~$")
         and f.stat().st_size > 100
+        and (not require_complete or _daily_report_set_complete(f))
     ]
     if not candidates:
         return None
@@ -2777,7 +2671,7 @@ def _folder_end_date(folder: Path) -> date | None:
     return max(dates) if dates else None
 
 
-def _resolve_latest_output_subdir(folder_path: Path) -> Path:
+def _resolve_latest_output_subdir(folder_path: Path, *, require_complete: bool = False) -> Path:
     """在 output 根目录下查找含有效处理结果、且数据截止日最新的子目录。"""
     subdirs = [p for p in folder_path.iterdir() if p.is_dir()]
     if not subdirs:
@@ -2785,7 +2679,7 @@ def _resolve_latest_output_subdir(folder_path: Path) -> Path:
 
     ranked: list[tuple[date, float, Path]] = []
     for subdir in subdirs:
-        if _find_valid_result_file(subdir) is None:
+        if _find_valid_result_file(subdir, require_complete=require_complete) is None:
             continue
         end_date = _folder_end_date(subdir)
         ranked.append(
@@ -2815,11 +2709,12 @@ def read_existingdata_folder(folder_path: str) -> tuple[pd.DataFrame, Path | Non
     """
     folder = Path(folder_path)
     if not folder.exists():
-        raise FileNotFoundError(f"历史处理结果根目录不存在：{folder}")
+        print(f"  尚无历史处理结果目录，按首次日报运行：{folder}")
+        return pd.DataFrame(), None
 
-    search_dir = _resolve_latest_output_subdir(folder)
+    search_dir = _resolve_latest_output_subdir(folder, require_complete=True)
 
-    latest_file = _find_valid_result_file(search_dir)
+    latest_file = _find_valid_result_file(search_dir, require_complete=True)
     if latest_file is None:
         print(
             f"  未找到历史处理结果文件，跳过历史窗口合并：{search_dir}",
@@ -2839,7 +2734,7 @@ def read_existingdata_folder(folder_path: str) -> tuple[pd.DataFrame, Path | Non
         return pd.DataFrame(), None
 
     # 剥离脚本附加的分析列，还原为原始数据
-    drop_cols = [c for c in RAW_ADDED_COLUMNS + ["_user_feeder_key", "_是否统计_bool", "_不统计原因"] if c in df.columns]
+    drop_cols = [c for c in RAW_ADDED_COLUMNS + ["本次较上次变化说明", "_user_feeder_key", "_是否统计_bool", "_不统计原因"] if c in df.columns]
     df = df.drop(columns=drop_cols)
     df.columns = [str(c).strip() for c in df.columns]
     df = df.dropna(how="all")
@@ -3050,10 +2945,10 @@ def main() -> int:
             existing_raw = result
     elif postgres_mode:
         try:
-            latest_dir = _resolve_latest_output_subdir(Path(existingdata_dir))
+            latest_dir = _resolve_latest_output_subdir(Path(existingdata_dir), require_complete=True)
             candidates = [
                 path for path in latest_dir.glob("*处理结果.xlsx")
-                if "_发出版" not in path.name and path.is_file()
+                if "_发出版" not in path.name and path.is_file() and _daily_report_set_complete(path)
             ]
             previous_file_path = max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
         except (FileNotFoundError, OSError):
@@ -3129,11 +3024,22 @@ def main() -> int:
         publish_output_path = Path(args.publish_output) if args.publish_output else out_base / f"{date_range_str}停电用户_处理结果_发出版.xlsx"
         stats_output_path = Path(STATS_OUTPUT_PATH)  if STATS_OUTPUT_PATH  else out_base / f"{date_range_str}统计表.xlsx"
 
+    # A correction with the same date range must not overwrite the prior
+    # successful workbook: it is the comparison and rollback baseline.
+    if not resolved_input and not historical_mode and output_path.exists():
+        token = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        output_path = output_path.with_name(f"{date_range_str}_{token}停电用户_处理结果.xlsx")
+        publish_output_path = publish_output_path.with_name(
+            f"{date_range_str}_{token}停电用户_处理结果_发出版.xlsx"
+        )
+        stats_output_path = stats_output_path.with_name(f"{date_range_str}_{token}统计表.xlsx")
+        print(f"  同日期范围再次运行，使用版本化文件名：{token}")
     print(f"  处理结果输出  ：{output_path}")
     print(f"  发出版输出    ：{publish_output_path}")
     print(f"  统计表输出    ：{stats_output_path}")
-    summary_simple_path = output_path.parent / f"{date_range_str}停电摘要（简版）.txt"
-    summary_full_path = output_path.parent / f"{date_range_str}停电摘要（全量版）.txt"
+    summary_stem = output_path.stem.replace("停电用户_处理结果", "")
+    summary_simple_path = output_path.parent / f"{summary_stem}停电摘要（简版）.txt"
+    summary_full_path = output_path.parent / f"{summary_stem}停电摘要（全量版）.txt"
 
     # 历史预警记录
     if args.previous_output:
@@ -3164,6 +3070,27 @@ def main() -> int:
         print("[ERR]  分析失败，程序终止", file=sys.stderr)
         return 1
     tables, stats = result_analyze
+    current_stats_dicts = compute_2026_stats_dicts(tables)
+    comparison, change_detail, user_explanations = compare_reports(
+        tables, previous_file_path, tables["用户停电总次数统计表"], existing_raw,
+        data_year=today.year,
+        current_source=str(raw_new.attrs.get("source_file", resolved_input or newdata_dir)),
+        current_stats_dicts=current_stats_dicts,
+    )
+    raw_detail = tables["用户停电总次数统计表"].copy()
+    raw_detail["本次较上次变化说明"] = raw_detail["用户编码"].map(
+        lambda value: user_explanations.get(normalize_identifier(value), "")
+    )
+    tables["用户停电总次数统计表"] = raw_detail
+    tables["变化明细"] = change_detail
+    comparison_path = output_path.with_name(f"{output_path.stem}_比较.json")
+    comparison["change_detail_sheet"] = "变化明细"
+    comparison["current_report"] = str(output_path)
+    write_text_atomic(comparison_path, json.dumps(comparison, ensure_ascii=False, indent=2))
+    if comparison.get("available"):
+        print(f"  较上次日报变化：{comparison['metrics']}")
+    else:
+        print(f"  较上次日报变化：{comparison.get('reason', '暂无可比基准')}")
 
     # ============================================================
     # 步骤 5：输出处理结果 Excel
@@ -3202,6 +3129,21 @@ def main() -> int:
             data_end_date=end_date,
             all_show_line_names=True,
         )
+        if comparison.get("available"):
+            user_change = comparison["metrics"]["用户"]
+            line_change = comparison["metrics"]["线路"]
+            user_report_delta = user_change.get("report_total_delta", user_change["net_change"])
+            line_report_delta = line_change.get("report_total_delta", line_change["net_change"])
+            comparison_line = (
+                f"较上次成功日报统计表减少：频繁停电用户 {max(0, -user_report_delta)} 户、"
+                f"频繁停电线路 {max(0, -line_report_delta)} 条；"
+                f"统计表净变化分别为 {user_report_delta:+d} 户、{line_report_delta:+d} 条。"
+                f"实际退出频繁清单：用户 {user_change['left_frequent']} 户、"
+                f"线路 {line_change['left_frequent']} 条；"
+                f"停电次数下降用户 {user_change['decreased_outage_count']} 户。"
+            )
+            s_simple = s_simple.rstrip("\n") + "\n" + comparison_line + "\n"
+            s_full = s_full.rstrip("\n") + "\n" + comparison_line + "\n"
         print("\n" + summary_banner("停电摘要（简版）"))
         print(s_simple, end="" if s_simple.endswith("\n") else "\n")
         print("\n" + summary_banner("停电摘要（全量版）"))

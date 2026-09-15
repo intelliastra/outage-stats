@@ -44,6 +44,11 @@
   const resultSection = document.getElementById("resultSection");
   const resultPlaceholder = document.getElementById("resultPlaceholder");
   const completeBanner = document.getElementById("completeBanner");
+  const reportComparison = document.getElementById("reportComparison");
+  const comparisonPrevious = document.getElementById("comparisonPrevious");
+  const comparisonUsers = document.getElementById("comparisonUsers");
+  const comparisonLines = document.getElementById("comparisonLines");
+  const comparisonCategories = document.getElementById("comparisonCategories");
   const summarySimple = document.getElementById("summarySimple");
   const summaryFull = document.getElementById("summaryFull");
   const dlResult = document.getElementById("dlResult");
@@ -395,6 +400,28 @@
       payload: payload,
       runStatus: runStatus,
     });
+    if (reportComparison) {
+      const diff = payload.status === "success" ? payload.comparison : null;
+      reportComparison.hidden = !diff;
+      if (diff) {
+        comparisonPrevious.textContent = diff.available
+          ? `上次报告：${String(diff.previous_report || "").split(/[\\/]/).pop()}；上次口径：${diff.previous_rule_version || "未记录"}；本次口径：${diff.rule_version || "—"}`
+          : (diff.reason || "暂无可比上次报告");
+        const users = (diff.metrics && diff.metrics["用户"]) || {};
+        const lines = (diff.metrics && diff.metrics["线路"]) || {};
+        comparisonUsers.textContent = diff.available
+          ? `频繁停电用户统计表合计：上次 ${users.report_total_previous ?? users.previous_frequent} 户 → 本次 ${users.report_total_current ?? users.current_frequent} 户；净变化 ${users.report_total_delta ?? users.net_change}。实际退出频繁清单 ${users.left_frequent} 户，停电次数下降 ${users.decreased_outage_count} 户。`
+          : "";
+        comparisonLines.textContent = diff.available
+          ? `频繁停电线路统计表合计：上次 ${lines.report_total_previous ?? lines.previous_frequent} 条 → 本次 ${lines.report_total_current ?? lines.current_frequent} 条；净变化 ${lines.report_total_delta ?? lines.net_change}。实际退出频繁清单 ${lines.left_frequent} 条。`
+          : "";
+        comparisonCategories.textContent = diff.available
+          ? (diff.statistics_columns || []).map(function (item) {
+              return `${item.column} ${item.label}：${item.previous} → ${item.current}（${item.delta > 0 ? "+" : ""}${item.delta}）`;
+            }).join("\n")
+          : "";
+      }
+    }
     GovUI.savePagePatch(PAGE, {
       jobId: state.jobId,
       lastResult: Object.assign({}, payload, { kind: "daily" }),
@@ -439,6 +466,7 @@
       completeBanner.textContent = "";
     }
     if (resultPlaceholder) resultPlaceholder.style.display = "";
+    if (reportComparison) reportComparison.hidden = true;
     summarySimple.value = "";
     summaryFull.value = "";
     GovUI.setDownloadLink(dlResult, null, "result", null);

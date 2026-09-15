@@ -37,6 +37,7 @@ from historical_utils import (
 )
 from job_manager import JobManager, JobStatus
 from log_parser import validate_output_path
+from upload_match import file_sha256, latest_matching_daily_file
 
 # Paths
 WEB_DIR = Path(__file__).resolve().parent.parent
@@ -598,6 +599,10 @@ def run_exclude(req: ExcludeRunRequest):
         input_path = UPLOAD_TMP / safe_name
     if not input_path.is_file():
         raise HTTPException(status_code=400, detail=f"文件不存在：{safe_name}，请先上传")
+    try:
+        latest_daily = latest_matching_daily_file(input_path, DAILY_NEWDATA_DIR)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     job, error = job_manager.create_exclude_job(input_path=input_path)
     if error:
@@ -608,6 +613,8 @@ def run_exclude(req: ExcludeRunRequest):
         "kind": job.kind,
         "created_at": job.created_at,
         "expected_seconds": job_manager.expected_seconds(job.kind),
+        "input_sha256": file_sha256(input_path),
+        "daily_filename": latest_daily.name,
     }
 
 
@@ -627,6 +634,8 @@ def _job_payload(job, *, include_logs: bool = False) -> dict:
         "expected_seconds": job_manager.expected_seconds(job.kind),
         "busy": job_manager.is_busy(),
     }
+    if job.kind == "daily" and job.status == JobStatus.SUCCESS:
+        payload["comparison"] = job_manager.get_report_comparison(job.result.output_files)
     if include_logs:
         payload["logs"] = job.get_log_text()
     return payload
@@ -663,6 +672,8 @@ def _persisted_job_payload(row: dict, *, include_logs: bool = False) -> dict:
         "busy": job_manager.is_busy(),
         "persisted": True,
     }
+    if payload["kind"] == "daily" and payload["status"] == "success":
+        payload["comparison"] = job_manager.get_report_comparison(outputs)
     if include_logs:
         payload["logs"] = row.get("error_message") or ""
     return payload
