@@ -51,6 +51,28 @@ class ReportIoTest(unittest.TestCase):
             self.assertEqual(sheet["B3"].number_format, "0")
             workbook.close()
 
+    def test_only_decreased_rows_in_change_sheet_are_yellow(self):
+        detail = pd.DataFrame([
+            {"用户或馈线编码": "00123", "上次停电次数": 6, "本次停电次数": 5, "备注": "减少且分类变化"},
+            {"用户或馈线编码": "00456", "上次停电次数": 6, "本次停电次数": 6, "备注": "仅分类变化"},
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "report.xlsx"
+            write_tables_streaming({"变化明细": detail, "其他清单": detail}, target)
+            book = openpyxl.load_workbook(target)
+            try:
+                change = book["变化明细"]
+                self.assertEqual(change.freeze_panes, "A2")
+                self.assertEqual(change.auto_filter.ref, "A1:D3")
+                for cell in change[2]:
+                    self.assertEqual(cell.fill.fgColor.rgb, "FFFFF2CC")
+                for cell in change[3]:
+                    self.assertFalse(cell.fill.patternType == "solid" and cell.fill.fgColor.rgb == "FFFFF2CC")
+                self.assertEqual(change["A2"].number_format, "@")
+                self.assertFalse(book["其他清单"]["A2"].fill.patternType == "solid")
+            finally:
+                book.close()
+
 
 if __name__ == "__main__":
     unittest.main()

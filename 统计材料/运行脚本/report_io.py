@@ -135,6 +135,12 @@ def write_tables_streaming(
         number_format = workbook.add_format({"num_format": "0"})
         datetime_format = workbook.add_format({"num_format": "yyyy-mm-dd hh:mm:ss"})
         date_format = workbook.add_format({"num_format": "yyyy-mm-dd"})
+        yellow = {"bg_color": "#FFF2CC"}
+        yellow_format = workbook.add_format(yellow)
+        yellow_text_format = workbook.add_format({**yellow, "num_format": "@"})
+        yellow_number_format = workbook.add_format({**yellow, "num_format": "0"})
+        yellow_datetime_format = workbook.add_format({**yellow, "num_format": "yyyy-mm-dd hh:mm:ss"})
+        yellow_date_format = workbook.add_format({**yellow, "num_format": "yyyy-mm-dd"})
 
         try:
             for sheet_name, table in tables.items():
@@ -148,9 +154,17 @@ def write_tables_streaming(
                     worksheet.write(0, column_index, column, header_format)
 
                 widths = [_display_width(column) for column in columns]
+                old_count_index = columns.index("上次停电次数") if "上次停电次数" in columns else -1
+                new_count_index = columns.index("本次停电次数") if "本次停电次数" in columns else -1
                 for row_index, values in enumerate(
                     table.itertuples(index=False, name=None), start=1
                 ):
+                    reduced_row = (
+                        sheet_name == "变化明细" and old_count_index >= 0 and new_count_index >= 0
+                        and (_number(values[old_count_index]) or 0)
+                        > (_number(values[new_count_index]) or 0)
+                    )
+                    row_format = yellow_format if reduced_row else None
                     for column_index, value in enumerate(values):
                         if (
                             not isinstance(value, (str, bytes, date, datetime, pd.Timestamp))
@@ -167,43 +181,48 @@ def write_tables_streaming(
 
                         if column_index in text_indexes:
                             worksheet.write_string(
-                                row_index, column_index, _identifier(value), text_format
+                                row_index, column_index, _identifier(value),
+                                yellow_text_format if reduced_row else text_format
                             )
                         elif column_index in number_indexes:
                             converted = _number(value)
                             if converted is None:
                                 worksheet.write_blank(
-                                    row_index, column_index, None, number_format
+                                    row_index, column_index, None,
+                                    yellow_number_format if reduced_row else number_format
                                 )
                             else:
                                 worksheet.write_number(
-                                    row_index, column_index, converted, number_format
+                                    row_index, column_index, converted,
+                                    yellow_number_format if reduced_row else number_format
                                 )
                         elif _is_blank(value):
-                            worksheet.write_blank(row_index, column_index, None)
+                            worksheet.write_blank(row_index, column_index, None, row_format)
                         elif isinstance(value, pd.Timestamp):
                             worksheet.write_datetime(
-                                row_index, column_index, value.to_pydatetime(), datetime_format
+                                row_index, column_index, value.to_pydatetime(),
+                                yellow_datetime_format if reduced_row else datetime_format
                             )
                         elif isinstance(value, datetime):
                             worksheet.write_datetime(
-                                row_index, column_index, value, datetime_format
+                                row_index, column_index, value,
+                                yellow_datetime_format if reduced_row else datetime_format
                             )
                         elif isinstance(value, date):
                             worksheet.write_datetime(
                                 row_index,
                                 column_index,
                                 datetime.combine(value, datetime.min.time()),
-                                date_format,
+                                yellow_date_format if reduced_row else date_format,
                             )
                         elif isinstance(value, bool):
-                            worksheet.write_boolean(row_index, column_index, value)
+                            worksheet.write_boolean(row_index, column_index, value, row_format)
                         elif isinstance(value, (int, float)) and not (
                             isinstance(value, float) and math.isnan(value)
                         ):
-                            worksheet.write_number(row_index, column_index, value)
+                            worksheet.write_number(row_index, column_index, value, row_format)
                         else:
-                            worksheet.write(row_index, column_index, value)
+                            worksheet.write(row_index, column_index, value, row_format)
 
                 worksheet.freeze_panes(1, 0)
                 if columns:

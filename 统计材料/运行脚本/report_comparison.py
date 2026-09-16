@@ -15,7 +15,7 @@ from statistics_priority import FREQUENT_RULES, WARNING_RULES, RULE_VERSION
 
 DETAIL_COLUMNS = [
     "对象类型", "用户或馈线编码", "所属地市", "上次停电次数", "本次停电次数",
-    "上次分类", "本次分类", "变化说明", "上次来源定位", "本次来源定位",
+    "上次分类", "本次分类", "变化说明", "备注", "上次来源定位", "本次来源定位",
 ]
 
 
@@ -29,6 +29,12 @@ def _id(value: object) -> str:
 def _number(value: object) -> int:
     parsed = pd.to_numeric(value, errors="coerce")
     return 0 if pd.isna(parsed) else int(parsed)
+
+
+def _all_types_text(types: frozenset[str]) -> str:
+    order = ["频繁/" + name for _, name in FREQUENT_RULES]
+    order += ["预警/" + name for _, name in WARNING_RULES]
+    return "；".join(label for label in order if label in types)
 
 
 def _snapshot(tables: dict[str, pd.DataFrame], kind: str, *, legacy_warning_priority: bool = False) -> dict[str, dict[str, Any]]:
@@ -68,6 +74,11 @@ def _snapshot(tables: dict[str, pd.DataFrame], kind: str, *, legacy_warning_prio
         city = sorted(entry["cities"], key=lambda name: (-entry["cities"][name], name))[0]
         snapshot[key] = {
             "category": ("频繁/" if frequent else "预警/") + category,
+            "types": frozenset(
+                ("频繁/" + name for _, name in FREQUENT_RULES if name in frequent)
+            ) | frozenset(
+                ("预警/" + name for _, name in WARNING_RULES if name in warning)
+            ),
             "count": sum(entry["counts"].values()), "city": city,
             "frequent": bool(frequent),
             "multi_hit": len(frequent) > 1 or len(warning) > 1 or bool(frequent and warning),
@@ -195,39 +206,53 @@ def compare_reports(
                 "report_total_current": total["current"],
                 "report_total_delta": total["delta"],
             })
+        # Client review Sheet: reduced count (including disappeared objects),
+        # or unchanged count with a changed set of *all* matched types.
+        # New objects and count increases still contribute to report metrics,
+        # but do not belong in the review Sheet.
         changed_keys = {
-            key for key in old.keys() | new.keys()
-            if key not in old or key not in new
-            or old[key]["count"] != new[key]["count"]
-            or old[key]["category"] != new[key]["category"]
-            or (old_rule_is_legacy and old[key]["multi_hit"])
+            key for key, prior in old.items()
+            if (key not in new and prior["count"] > 0)
+            or (key in new and (
+                new[key]["count"] < prior["count"]
+                or (new[key]["count"] == prior["count"]
+                    and new[key]["types"] != prior["types"])
+            ))
         }
         old_locs = _source_locations(previous_raw, kind, changed_keys)
         new_locs = _source_locations(current_raw, kind, changed_keys)
         for key in sorted(changed_keys):
             prior, after = old.get(key), new.get(key)
-            if prior is None:
-                description = "本次新增；请核对新增日期或重导记录"
-            elif after is None:
-                description = "本次减少；上次记录或分类已不在本次结果，需核对重导及剔除依据"
-            elif after["count"] < prior["count"]:
-                description = f"停电次数减少 {prior['count'] - after['count']} 次；请核对记录修订、剔除及口径"
-            elif after["count"] > prior["count"]:
-                description = f"停电次数增加 {after['count'] - prior['count']} 次；请核对新增日期及修订记录"
+            previous_types = prior["types"]
+            current_types = after["types"] if after else frozenset()
+            type_changed = previous_types != current_types
+            reduced = after is None or after["count"] < prior["count"]
+            if after is None:
+                description = "本次减少；上次对象已不在本次结果"
+            elif reduced:
+                description = f"停电次数减少 {prior['count'] - after['count']} 次"
             else:
-                description = "停电次数未变，分类变化；请核对统计规则版本"
-            if prior and after and prior["category"] != after["category"]:
-                description += f"；{prior['category']}→{after['category']}"
-            if prior and after and old_rule_is_legacy and prior["multi_hit"]:
-                description += "；上次多规则命中可能重复计列，本次按最高优先级只计一次"
+                description = "停电次数未变，类型变化"
+            if type_changed and reduced:
+                description += "；类型变化"
+            remarks = []
+            if reduced:
+                remarks.append("请核对原始停电记录、重导修订及剔除依据；原因待核")
+            if type_changed:
+                remarks.append("上次类型→本次类型（详见相邻两列）；请核对分类规则版本")
+            if after and old_rule_is_legacy and prior["multi_hit"]:
+                remarks.append("上次多规则命中可能重复计列；正式统计表仍按最高优先级只计一次")
+            previous_type_text = _all_types_text(previous_types)
+            current_type_text = _all_types_text(current_types)
             rows.append({
                 "对象类型": kind, "用户或馈线编码": key,
                 "所属地市": (after or prior)["city"],
                 "上次停电次数": prior["count"] if prior else 0,
                 "本次停电次数": after["count"] if after else 0,
-                "上次分类": prior["category"] if prior else "",
-                "本次分类": after["category"] if after else "",
+                "上次分类": previous_type_text,
+                "本次分类": current_type_text,
                 "变化说明": description,
+                "备注": "；".join(remarks),
                 "上次来源定位": old_locs.get(key) or (
                     f"旧报告{previous_file.name}/" +
                     ("频繁停电用户清单" if kind == "用户" else "频繁停电线路清单") +
@@ -236,7 +261,7 @@ def compare_reports(
                 "本次来源定位": new_locs.get(key) or (f"本次用户或馈线编码/{key}" if after else ""),
             })
             if kind == "用户" and after:
-                user_explanations[key] = description
+                user_explanations[key] = description + ("；" + "；".join(remarks) if remarks else "")
     comparison = {
         "available": True, "previous_report": str(previous_file),
         "current_source": current_source, "rule_version": RULE_VERSION,

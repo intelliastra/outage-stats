@@ -177,6 +177,56 @@ class StatisticsUpdatesTest(unittest.TestCase):
             self.assertIn("工单A2", lost["上次来源定位"])
             self.assertIn("停电次数减少", explanations["U1"])
             self.assertIn("多规则命中", explanations["U1"])
+            self.assertIn("频繁/年>5次；频繁/60天>3次", detail.loc[detail["用户或馈线编码"] == "U1", "上次分类"].iloc[0])
+            self.assertIn("类型变化", detail.loc[detail["用户或馈线编码"] == "U1", "变化说明"].iloc[0])
+
+    def test_comparison_only_reduced_or_same_count_type_changed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            stem = "2026.1.1-9.10"
+            previous = root / f"{stem}停电用户_处理结果.xlsx"
+            old = {
+                "用户停电总次数统计表": pd.DataFrame([{"停电开始时间": "2026-09-10"}]),
+                "频繁停电用户清单": pd.DataFrame([
+                    {"用户编码": "TYPE", "所属地市": "广州", "停电总次数": 6, "频繁停电类型": "一年内停电次数超过5次；连续60天停电次数超过3次"},
+                    {"用户编码": "LESS", "所属地市": "广州", "停电总次数": 6, "频繁停电类型": "一年内停电次数超过5次"},
+                    {"用户编码": "MORE", "所属地市": "广州", "停电总次数": 6, "频繁停电类型": "一年内停电次数超过5次"},
+                ]),
+                "停电预警用户清单": pd.DataFrame(),
+                "频繁停电线路清单": pd.DataFrame(),
+                "停电预警线路清单": pd.DataFrame(),
+            }
+            write_tables_streaming(old, previous)
+            (root / f"{stem}停电用户_处理结果_发出版.xlsx").write_bytes(previous.read_bytes())
+            stats = openpyxl.Workbook()
+            stats.active.title = "2026年统计表"
+            stats.save(root / f"{stem}统计表.xlsx")
+            for suffix in ("停电摘要（简版）.txt", "停电摘要（全量版）.txt"):
+                (root / f"{stem}{suffix}").write_text("完成", encoding="utf-8")
+            now = {
+                "频繁停电用户清单": pd.DataFrame([
+                    {"用户编码": "TYPE", "所属地市": "广州", "停电总次数": 6, "频繁停电类型": "一年内停电次数超过5次"},
+                    {"用户编码": "LESS", "所属地市": "广州", "停电总次数": 5, "频繁停电类型": "一年内停电次数超过5次；连续60天停电次数超过3次"},
+                    {"用户编码": "MORE", "所属地市": "广州", "停电总次数": 7, "频繁停电类型": "一年内停电次数超过5次"},
+                    {"用户编码": "NEW", "所属地市": "广州", "停电总次数": 6, "频繁停电类型": "一年内停电次数超过5次"},
+                ]),
+                "停电预警用户清单": pd.DataFrame(),
+                "频繁停电线路清单": pd.DataFrame(),
+                "停电预警线路清单": pd.DataFrame(),
+            }
+            info, detail, _ = compare_reports(now, previous, pd.DataFrame(), pd.DataFrame(),
+                                              data_year=2026, current_source="new.xlsx")
+            self.assertEqual(set(detail["用户或馈线编码"]), {"TYPE", "LESS"})
+            changed_type = detail.set_index("用户或馈线编码").loc["TYPE"]
+            self.assertEqual(changed_type["上次停电次数"], changed_type["本次停电次数"])
+            self.assertIn("频繁/60天>3次", changed_type["上次分类"])
+            self.assertNotIn("频繁/60天>3次", changed_type["本次分类"])
+            self.assertIn("类型变化", changed_type["变化说明"])
+            decreased = detail.set_index("用户或馈线编码").loc["LESS"]
+            self.assertIn("停电次数减少", decreased["变化说明"])
+            self.assertIn("类型变化", decreased["变化说明"])
+            self.assertIn("原因待核", decreased["备注"])
+            self.assertEqual(info["changed_entities"], 2)
 
 
 if __name__ == "__main__":
