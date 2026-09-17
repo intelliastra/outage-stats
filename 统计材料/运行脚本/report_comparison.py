@@ -252,6 +252,17 @@ def compare_reports(
             and (key not in old or new_counts[key] > old_counts[key])
         }
         changed_keys = reduced_keys | same_count_type_changed_keys
+
+        def city_for(key: str) -> str:
+            source = (
+                new_complete.get(key) or new.get(key)
+                or old_complete.get(key) or old.get(key) or {}
+            )
+            return str(source.get("city") or "未归属")
+
+        def by_city(keys: set[str]) -> dict[str, int]:
+            return dict(Counter(city_for(key) for key in keys))
+
         metrics[kind] = {
             "previous_frequent": len(freq_old), "current_frequent": len(freq_new),
             "net_change": len(freq_new) - len(freq_old),
@@ -261,6 +272,9 @@ def compare_reports(
             "increased_outage_count": len(increased_keys),
             "decreased_outage_count": len(reduced_keys),
             "same_count_type_changed": len(same_count_type_changed_keys),
+            "increased_by_city": by_city(increased_keys),
+            "decreased_by_city": by_city(reduced_keys),
+            "type_changed_by_city": by_city(same_count_type_changed_keys),
         }
         total_index = 11 if kind == "用户" else 15
         if stats_columns:

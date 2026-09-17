@@ -34,12 +34,16 @@ class StatisticsUpdatesTest(unittest.TestCase):
                 "用户": {
                     "report_total_delta": 0, "net_change": 0, "left_frequent": 0,
                     "increased_outage_count": 0,
+                    "increased_by_city": {}, "decreased_by_city": {"湛江供电局": 40},
+                    "type_changed_by_city": {"湛江供电局": 6},
                     "change_detail_count": 46, "decreased_outage_count": 40,
                     "same_count_type_changed": 6,
                 },
                 "线路": {
                     "report_total_delta": 0, "net_change": 0, "left_frequent": 0,
                     "increased_outage_count": 0,
+                    "increased_by_city": {}, "decreased_by_city": {"湛江供电局": 9},
+                    "type_changed_by_city": {"湛江供电局": 1},
                     "change_detail_count": 10, "decreased_outage_count": 9,
                     "same_count_type_changed": 1,
                 },
@@ -48,8 +52,10 @@ class StatisticsUpdatesTest(unittest.TestCase):
         text = module.format_comparison_summary(comparison)
         self.assertEqual(
             text,
-            "较上次成功日报变化：增加：本次无增加；减少：用户 40 户、线路 9 条；"
-            "类型变化：用户 6 户、线路 1 条。",
+            "较上次成功日报变化：\n"
+            "增加：本次无增加\n"
+            "减少：\n    · 湛江供电局停电次数下降 40 户、9 条线路\n"
+            "类型变化：\n    · 湛江供电局统计类型变化 6 户、1 条线路",
         )
 
         empty = {
@@ -61,7 +67,7 @@ class StatisticsUpdatesTest(unittest.TestCase):
         }
         self.assertEqual(
             module.format_comparison_summary(empty),
-            "较上次成功日报变化：增加：本次无增加；减少：本次无减少；类型变化：本次无类型变化。",
+            "较上次成功日报变化：\n增加：本次无增加\n减少：本次无减少\n类型变化：本次无类型变化",
         )
 
     def test_warning_and_frequent_are_exclusive(self):

@@ -363,21 +363,43 @@ def format_comparison_summary(comparison: dict) -> str:
     user = comparison["metrics"]["用户"]
     line = comparison["metrics"]["线路"]
 
-    def section(label: str, metric: str, empty_text: str) -> str:
-        values = []
+    def section(
+        label: str, metric: str, city_metric: str,
+        empty_text: str, change_text: str,
+    ) -> str:
         user_value = int(user.get(metric, 0))
         line_value = int(line.get(metric, 0))
-        if user_value > 0:
-            values.append(f"用户 {user_value} 户")
-        if line_value > 0:
-            values.append(f"线路 {line_value} 条")
-        return f"{label}：" + ("、".join(values) if values else empty_text)
+        if user_value == 0 and line_value == 0:
+            return f"{label}：{empty_text}"
+        user_cities = {str(k): int(v) for k, v in user.get(city_metric, {}).items()}
+        line_cities = {str(k): int(v) for k, v in line.get(city_metric, {}).items()}
+        cities = sorted(
+            set(user_cities) | set(line_cities),
+            key=lambda city: (-(user_cities.get(city, 0) + line_cities.get(city, 0)), city),
+        )
+        if not cities:
+            totals = []
+            if user_value:
+                totals.append(f"{user_value} 户")
+            if line_value:
+                totals.append(f"{line_value} 条线路")
+            return f"{label}：{change_text} " + "、".join(totals)
+        lines = [f"{label}："]
+        for city in cities:
+            quantities = []
+            if user_cities.get(city, 0):
+                quantities.append(f"{user_cities[city]} 户")
+            if line_cities.get(city, 0):
+                quantities.append(f"{line_cities[city]} 条线路")
+            lines.append(f"    · {city}{change_text} " + "、".join(quantities))
+        return "\n".join(lines)
 
-    return "较上次成功日报变化：" + "；".join((
-        section("增加", "increased_outage_count", "本次无增加"),
-        section("减少", "decreased_outage_count", "本次无减少"),
-        section("类型变化", "same_count_type_changed", "本次无类型变化"),
-    )) + "。"
+    return "\n".join((
+        "较上次成功日报变化：",
+        section("增加", "increased_outage_count", "increased_by_city", "本次无增加", "停电次数增加"),
+        section("减少", "decreased_outage_count", "decreased_by_city", "本次无减少", "停电次数下降"),
+        section("类型变化", "same_count_type_changed", "type_changed_by_city", "本次无类型变化", "统计类型变化"),
+    ))
 
 
 def _build_stats_section_text(
