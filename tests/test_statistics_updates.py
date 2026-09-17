@@ -172,6 +172,9 @@ class StatisticsUpdatesTest(unittest.TestCase):
             self.assertTrue(info["available"])
             self.assertEqual(info["metrics"]["用户"]["left_frequent"], 1)
             self.assertEqual(info["metrics"]["用户"]["report_total_delta"], -3)
+            self.assertEqual(info["metrics"]["用户"]["change_detail_count"], 2)
+            self.assertEqual(info["metrics"]["用户"]["decreased_outage_count"], 2)
+            self.assertEqual(info["metrics"]["用户"]["same_count_type_changed"], 0)
             lost = detail[(detail["对象类型"] == "用户") & (detail["用户或馈线编码"] == "U2")].iloc[0]
             self.assertIn("本次减少", lost["变化说明"])
             self.assertIn("工单A2", lost["上次来源定位"])
@@ -227,6 +230,9 @@ class StatisticsUpdatesTest(unittest.TestCase):
             self.assertIn("类型变化", decreased["变化说明"])
             self.assertIn("原因待核", decreased["备注"])
             self.assertEqual(info["changed_entities"], 2)
+            self.assertEqual(info["metrics"]["用户"]["change_detail_count"], 2)
+            self.assertEqual(info["metrics"]["用户"]["decreased_outage_count"], 1)
+            self.assertEqual(info["metrics"]["用户"]["same_count_type_changed"], 1)
 
 
 if __name__ == "__main__":

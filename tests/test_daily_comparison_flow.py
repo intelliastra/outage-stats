@@ -101,6 +101,7 @@ class DailyComparisonFlowTest(unittest.TestCase):
             self.assertIn("U2", detail["用户或馈线编码"].tolist())
             summary = newer.with_name(newer.stem.replace("停电用户_处理结果", "") + "停电摘要（简版）.txt").read_text(encoding="utf-8")
             self.assertIn("较上次成功日报统计表减少：频繁停电用户 1 户", summary)
+            self.assertIn("变化明细：用户 1 户（停电次数下降 1 户、次数未变但类型变化 0 户）", summary)
 
 
 if __name__ == "__main__":

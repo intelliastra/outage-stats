@@ -3140,7 +3140,12 @@ def main() -> int:
                 f"统计表净变化分别为 {user_report_delta:+d} 户、{line_report_delta:+d} 条。"
                 f"实际退出频繁清单：用户 {user_change['left_frequent']} 户、"
                 f"线路 {line_change['left_frequent']} 条；"
-                f"停电次数下降用户 {user_change['decreased_outage_count']} 户。"
+                f"变化明细：用户 {user_change['change_detail_count']} 户"
+                f"（停电次数下降 {user_change['decreased_outage_count']} 户、"
+                f"次数未变但类型变化 {user_change['same_count_type_changed']} 户），"
+                f"线路 {line_change['change_detail_count']} 条"
+                f"（停电次数下降 {line_change['decreased_outage_count']} 条、"
+                f"次数未变但类型变化 {line_change['same_count_type_changed']} 条）。"
             )
             s_simple = s_simple.rstrip("\n") + "\n" + comparison_line + "\n"
             s_full = s_full.rstrip("\n") + "\n" + comparison_line + "\n"

@@ -189,14 +189,26 @@ def compare_reports(
         new = _snapshot(current, kind)
         freq_old = {key for key, value in old.items() if value["frequent"]}
         freq_new = {key for key, value in new.items() if value["frequent"]}
+        reduced_keys = {
+            key for key, prior in old.items()
+            if prior["count"] > 0
+            and (key not in new or new[key]["count"] < prior["count"])
+        }
+        same_count_type_changed_keys = {
+            key for key, prior in old.items()
+            if key in new
+            and new[key]["count"] == prior["count"]
+            and new[key]["types"] != prior["types"]
+        }
+        changed_keys = reduced_keys | same_count_type_changed_keys
         metrics[kind] = {
             "previous_frequent": len(freq_old), "current_frequent": len(freq_new),
             "net_change": len(freq_new) - len(freq_old),
             "entered_frequent": len(freq_new - freq_old),
             "left_frequent": len(freq_old - freq_new),
-            "decreased_outage_count": sum(
-                new[key]["count"] < old[key]["count"] for key in old.keys() & new.keys()
-            ),
+            "change_detail_count": len(changed_keys),
+            "decreased_outage_count": len(reduced_keys),
+            "same_count_type_changed": len(same_count_type_changed_keys),
         }
         total_index = 11 if kind == "用户" else 15
         if stats_columns:
@@ -210,15 +222,6 @@ def compare_reports(
         # or unchanged count with a changed set of *all* matched types.
         # New objects and count increases still contribute to report metrics,
         # but do not belong in the review Sheet.
-        changed_keys = {
-            key for key, prior in old.items()
-            if (key not in new and prior["count"] > 0)
-            or (key in new and (
-                new[key]["count"] < prior["count"]
-                or (new[key]["count"] == prior["count"]
-                    and new[key]["types"] != prior["types"])
-            ))
-        }
         old_locs = _source_locations(previous_raw, kind, changed_keys)
         new_locs = _source_locations(current_raw, kind, changed_keys)
         for key in sorted(changed_keys):
