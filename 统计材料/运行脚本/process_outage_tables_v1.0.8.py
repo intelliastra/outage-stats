@@ -356,55 +356,28 @@ def summary_banner(title: str, width: int = 52) -> str:
 
 
 def format_comparison_summary(comparison: dict) -> str:
-    """Build a concise non-zero comparison sentence for report summaries."""
+    """State increase, decrease and type-only changes explicitly."""
     if not comparison.get("available"):
         return ""
 
     user = comparison["metrics"]["用户"]
     line = comparison["metrics"]["线路"]
-    sections: list[str] = []
 
-    report_changes: list[str] = []
-    for label, metrics, unit in (
-        ("频繁停电用户", user, "户"),
-        ("频繁停电线路", line, "条"),
-    ):
-        delta = int(metrics.get("report_total_delta", metrics.get("net_change", 0)))
-        if delta < 0:
-            report_changes.append(f"{label}减少 {-delta} {unit}")
-        elif delta > 0:
-            report_changes.append(f"{label}增加 {delta} {unit}")
-    if report_changes:
-        sections.append("统计表变化：" + "、".join(report_changes))
+    def section(label: str, metric: str, empty_text: str) -> str:
+        values = []
+        user_value = int(user.get(metric, 0))
+        line_value = int(line.get(metric, 0))
+        if user_value > 0:
+            values.append(f"用户 {user_value} 户")
+        if line_value > 0:
+            values.append(f"线路 {line_value} 条")
+        return f"{label}：" + ("、".join(values) if values else empty_text)
 
-    exits: list[str] = []
-    if int(user.get("left_frequent", 0)) > 0:
-        exits.append(f"用户 {user['left_frequent']} 户")
-    if int(line.get("left_frequent", 0)) > 0:
-        exits.append(f"线路 {line['left_frequent']} 条")
-    if exits:
-        sections.append("实际退出频繁清单：" + "、".join(exits))
-
-    detail_parts: list[str] = []
-    for label, metrics, unit in (("用户", user, "户"), ("线路", line, "条")):
-        decreased = int(metrics.get("decreased_outage_count", 0))
-        type_changed = int(metrics.get("same_count_type_changed", 0))
-        total = int(metrics.get("change_detail_count", decreased + type_changed))
-        if total <= 0:
-            continue
-        breakdown: list[str] = []
-        if decreased > 0:
-            breakdown.append(f"停电次数下降 {decreased} {unit}")
-        if type_changed > 0:
-            breakdown.append(f"次数未变但类型变化 {type_changed} {unit}")
-        suffix = f"（{'、'.join(breakdown)}）" if breakdown else ""
-        detail_parts.append(f"{label} {total} {unit}{suffix}")
-    if detail_parts:
-        sections.append("变化明细：" + "，".join(detail_parts))
-
-    if not sections:
-        return "较上次成功日报无统计变化。"
-    return "较上次成功日报" + "；".join(sections) + "。"
+    return "较上次成功日报变化：" + "；".join((
+        section("增加", "increased_outage_count", "本次无增加"),
+        section("减少", "decreased_outage_count", "本次无减少"),
+        section("类型变化", "same_count_type_changed", "本次无类型变化"),
+    )) + "。"
 
 
 def _build_stats_section_text(

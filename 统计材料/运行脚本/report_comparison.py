@@ -200,6 +200,11 @@ def compare_reports(
             and new[key]["count"] == prior["count"]
             and new[key]["types"] != prior["types"]
         }
+        increased_keys = {
+            key for key, after in new.items()
+            if after["count"] > 0
+            and (key not in old or after["count"] > old[key]["count"])
+        }
         changed_keys = reduced_keys | same_count_type_changed_keys
         metrics[kind] = {
             "previous_frequent": len(freq_old), "current_frequent": len(freq_new),
@@ -207,6 +212,7 @@ def compare_reports(
             "entered_frequent": len(freq_new - freq_old),
             "left_frequent": len(freq_old - freq_new),
             "change_detail_count": len(changed_keys),
+            "increased_outage_count": len(increased_keys),
             "decreased_outage_count": len(reduced_keys),
             "same_count_type_changed": len(same_count_type_changed_keys),
         }

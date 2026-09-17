@@ -33,11 +33,13 @@ class StatisticsUpdatesTest(unittest.TestCase):
             "metrics": {
                 "用户": {
                     "report_total_delta": 0, "net_change": 0, "left_frequent": 0,
+                    "increased_outage_count": 0,
                     "change_detail_count": 46, "decreased_outage_count": 40,
                     "same_count_type_changed": 6,
                 },
                 "线路": {
                     "report_total_delta": 0, "net_change": 0, "left_frequent": 0,
+                    "increased_outage_count": 0,
                     "change_detail_count": 10, "decreased_outage_count": 9,
                     "same_count_type_changed": 1,
                 },
@@ -46,10 +48,9 @@ class StatisticsUpdatesTest(unittest.TestCase):
         text = module.format_comparison_summary(comparison)
         self.assertEqual(
             text,
-            "较上次成功日报变化明细：用户 46 户（停电次数下降 40 户、次数未变但类型变化 6 户），"
-            "线路 10 条（停电次数下降 9 条、次数未变但类型变化 1 条）。",
+            "较上次成功日报变化：增加：本次无增加；减少：用户 40 户、线路 9 条；"
+            "类型变化：用户 6 户、线路 1 条。",
         )
-        self.assertNotIn(" 0 ", text)
 
         empty = {
             "available": True,
@@ -58,7 +59,10 @@ class StatisticsUpdatesTest(unittest.TestCase):
                 "线路": {"report_total_delta": 0, "net_change": 0, "left_frequent": 0},
             },
         }
-        self.assertEqual(module.format_comparison_summary(empty), "较上次成功日报无统计变化。")
+        self.assertEqual(
+            module.format_comparison_summary(empty),
+            "较上次成功日报变化：增加：本次无增加；减少：本次无减少；类型变化：本次无类型变化。",
+        )
 
     def test_warning_and_frequent_are_exclusive(self):
         frequent = pd.DataFrame([
@@ -207,6 +211,7 @@ class StatisticsUpdatesTest(unittest.TestCase):
             self.assertEqual(info["metrics"]["用户"]["left_frequent"], 1)
             self.assertEqual(info["metrics"]["用户"]["report_total_delta"], -3)
             self.assertEqual(info["metrics"]["用户"]["change_detail_count"], 2)
+            self.assertEqual(info["metrics"]["用户"]["increased_outage_count"], 0)
             self.assertEqual(info["metrics"]["用户"]["decreased_outage_count"], 2)
             self.assertEqual(info["metrics"]["用户"]["same_count_type_changed"], 0)
             lost = detail[(detail["对象类型"] == "用户") & (detail["用户或馈线编码"] == "U2")].iloc[0]
@@ -265,6 +270,7 @@ class StatisticsUpdatesTest(unittest.TestCase):
             self.assertIn("原因待核", decreased["备注"])
             self.assertEqual(info["changed_entities"], 2)
             self.assertEqual(info["metrics"]["用户"]["change_detail_count"], 2)
+            self.assertEqual(info["metrics"]["用户"]["increased_outage_count"], 2)
             self.assertEqual(info["metrics"]["用户"]["decreased_outage_count"], 1)
             self.assertEqual(info["metrics"]["用户"]["same_count_type_changed"], 1)
 
