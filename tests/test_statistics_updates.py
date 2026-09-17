@@ -26,6 +26,40 @@ def load_script(name: str, file_name: str):
 
 
 class StatisticsUpdatesTest(unittest.TestCase):
+    def test_comparison_summary_omits_zero_metrics(self):
+        module = load_script("daily_summary_format_test", "process_outage_tables_v1.0.8.py")
+        comparison = {
+            "available": True,
+            "metrics": {
+                "用户": {
+                    "report_total_delta": 0, "net_change": 0, "left_frequent": 0,
+                    "change_detail_count": 46, "decreased_outage_count": 40,
+                    "same_count_type_changed": 6,
+                },
+                "线路": {
+                    "report_total_delta": 0, "net_change": 0, "left_frequent": 0,
+                    "change_detail_count": 10, "decreased_outage_count": 9,
+                    "same_count_type_changed": 1,
+                },
+            },
+        }
+        text = module.format_comparison_summary(comparison)
+        self.assertEqual(
+            text,
+            "较上次成功日报变化明细：用户 46 户（停电次数下降 40 户、次数未变但类型变化 6 户），"
+            "线路 10 条（停电次数下降 9 条、次数未变但类型变化 1 条）。",
+        )
+        self.assertNotIn(" 0 ", text)
+
+        empty = {
+            "available": True,
+            "metrics": {
+                "用户": {"report_total_delta": 0, "net_change": 0, "left_frequent": 0},
+                "线路": {"report_total_delta": 0, "net_change": 0, "left_frequent": 0},
+            },
+        }
+        self.assertEqual(module.format_comparison_summary(empty), "较上次成功日报无统计变化。")
+
     def test_warning_and_frequent_are_exclusive(self):
         frequent = pd.DataFrame([
             {"用户编码": "U1", "所属地市": "广州", "频繁停电类型": "一年内停电次数超过5次；连续60天停电次数超过3次"},

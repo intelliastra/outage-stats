@@ -355,6 +355,58 @@ def summary_banner(title: str, width: int = 52) -> str:
     return f"{line}\n  {title}\n{line}"
 
 
+def format_comparison_summary(comparison: dict) -> str:
+    """Build a concise non-zero comparison sentence for report summaries."""
+    if not comparison.get("available"):
+        return ""
+
+    user = comparison["metrics"]["用户"]
+    line = comparison["metrics"]["线路"]
+    sections: list[str] = []
+
+    report_changes: list[str] = []
+    for label, metrics, unit in (
+        ("频繁停电用户", user, "户"),
+        ("频繁停电线路", line, "条"),
+    ):
+        delta = int(metrics.get("report_total_delta", metrics.get("net_change", 0)))
+        if delta < 0:
+            report_changes.append(f"{label}减少 {-delta} {unit}")
+        elif delta > 0:
+            report_changes.append(f"{label}增加 {delta} {unit}")
+    if report_changes:
+        sections.append("统计表变化：" + "、".join(report_changes))
+
+    exits: list[str] = []
+    if int(user.get("left_frequent", 0)) > 0:
+        exits.append(f"用户 {user['left_frequent']} 户")
+    if int(line.get("left_frequent", 0)) > 0:
+        exits.append(f"线路 {line['left_frequent']} 条")
+    if exits:
+        sections.append("实际退出频繁清单：" + "、".join(exits))
+
+    detail_parts: list[str] = []
+    for label, metrics, unit in (("用户", user, "户"), ("线路", line, "条")):
+        decreased = int(metrics.get("decreased_outage_count", 0))
+        type_changed = int(metrics.get("same_count_type_changed", 0))
+        total = int(metrics.get("change_detail_count", decreased + type_changed))
+        if total <= 0:
+            continue
+        breakdown: list[str] = []
+        if decreased > 0:
+            breakdown.append(f"停电次数下降 {decreased} {unit}")
+        if type_changed > 0:
+            breakdown.append(f"次数未变但类型变化 {type_changed} {unit}")
+        suffix = f"（{'、'.join(breakdown)}）" if breakdown else ""
+        detail_parts.append(f"{label} {total} {unit}{suffix}")
+    if detail_parts:
+        sections.append("变化明细：" + "，".join(detail_parts))
+
+    if not sections:
+        return "较上次成功日报无统计变化。"
+    return "较上次成功日报" + "；".join(sections) + "。"
+
+
 def _build_stats_section_text(
     count_by_city: dict[str, int],
     names_df: pd.DataFrame | None,
@@ -3130,23 +3182,7 @@ def main() -> int:
             all_show_line_names=True,
         )
         if comparison.get("available"):
-            user_change = comparison["metrics"]["用户"]
-            line_change = comparison["metrics"]["线路"]
-            user_report_delta = user_change.get("report_total_delta", user_change["net_change"])
-            line_report_delta = line_change.get("report_total_delta", line_change["net_change"])
-            comparison_line = (
-                f"较上次成功日报统计表减少：频繁停电用户 {max(0, -user_report_delta)} 户、"
-                f"频繁停电线路 {max(0, -line_report_delta)} 条；"
-                f"统计表净变化分别为 {user_report_delta:+d} 户、{line_report_delta:+d} 条。"
-                f"实际退出频繁清单：用户 {user_change['left_frequent']} 户、"
-                f"线路 {line_change['left_frequent']} 条；"
-                f"变化明细：用户 {user_change['change_detail_count']} 户"
-                f"（停电次数下降 {user_change['decreased_outage_count']} 户、"
-                f"次数未变但类型变化 {user_change['same_count_type_changed']} 户），"
-                f"线路 {line_change['change_detail_count']} 条"
-                f"（停电次数下降 {line_change['decreased_outage_count']} 条、"
-                f"次数未变但类型变化 {line_change['same_count_type_changed']} 条）。"
-            )
+            comparison_line = format_comparison_summary(comparison)
             s_simple = s_simple.rstrip("\n") + "\n" + comparison_line + "\n"
             s_full = s_full.rstrip("\n") + "\n" + comparison_line + "\n"
         print("\n" + summary_banner("停电摘要（简版）"))
