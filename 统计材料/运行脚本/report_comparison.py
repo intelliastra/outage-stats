@@ -86,6 +86,36 @@ def _snapshot(tables: dict[str, pd.DataFrame], kind: str, *, legacy_warning_prio
     return snapshot
 
 
+def _complete_count_snapshot(
+    tables: dict[str, pd.DataFrame], kind: str
+) -> dict[str, dict[str, Any]]:
+    """Read actual totals from the complete user/feeder lists, not threshold lists."""
+    sheet_name = "停电用户清单" if kind == "用户" else "停电线路清单"
+    key_col = "用户编码" if kind == "用户" else "所属馈线编码"
+    frame = tables.get(sheet_name, pd.DataFrame())
+    if frame.empty or key_col not in frame.columns:
+        return {}
+    entries: dict[str, dict[str, Any]] = {}
+    for _, row in frame.iterrows():
+        key = _id(row.get(key_col, ""))
+        if not key:
+            continue
+        entry = entries.setdefault(key, {"counts": {}, "cities": Counter()})
+        subkey = _id(row.get("所属馈线编码", "")) if kind == "用户" else key
+        entry["counts"][subkey] = max(
+            entry["counts"].get(subkey, 0), _number(row.get("停电总次数", 0))
+        )
+        entry["cities"][_id(row.get("所属地市", "")) or "未归属"] += 1
+    result: dict[str, dict[str, Any]] = {}
+    for key, entry in entries.items():
+        cities = entry["cities"]
+        result[key] = {
+            "count": sum(entry["counts"].values()),
+            "city": sorted(cities, key=lambda name: (-cities[name], name))[0],
+        }
+    return result
+
+
 def _source_locations(raw: pd.DataFrame, kind: str, keys: set[str]) -> dict[str, str]:
     if raw.empty or not keys:
         return {}
@@ -142,8 +172,15 @@ def compare_reports(
     previous: dict[str, pd.DataFrame] = {}
     try:
         with pd.ExcelFile(previous_file) as excel:
-            for sheet in ("频繁停电用户清单", "停电预警用户清单", "频繁停电线路清单", "停电预警线路清单"):
-                previous[sheet] = pd.read_excel(excel, sheet_name=sheet, dtype=str)
+            for sheet in (
+                "停电用户清单", "停电线路清单",
+                "频繁停电用户清单", "停电预警用户清单",
+                "频繁停电线路清单", "停电预警线路清单",
+            ):
+                previous[sheet] = (
+                    pd.read_excel(excel, sheet_name=sheet, dtype=str)
+                    if sheet in excel.sheet_names else pd.DataFrame()
+                )
     except (ValueError, OSError) as exc:
         return ({"available": False, "reason": f"上次日报清单不可读取：{exc}", "rule_version": RULE_VERSION},
                 pd.DataFrame(columns=DETAIL_COLUMNS), {})
@@ -187,23 +224,32 @@ def compare_reports(
     for kind in ("用户", "线路"):
         old = _snapshot(previous, kind, legacy_warning_priority=old_rule_is_legacy)
         new = _snapshot(current, kind)
+        old_complete = _complete_count_snapshot(previous, kind)
+        new_complete = _complete_count_snapshot(current, kind)
+
+        def actual_count(key: str, complete: dict, members: dict) -> int:
+            if key in complete:
+                return int(complete[key]["count"])
+            return int(members.get(key, {}).get("count", 0))
+
+        relevant_keys = old.keys() | new.keys()
+        old_counts = {key: actual_count(key, old_complete, old) for key in relevant_keys}
+        new_counts = {key: actual_count(key, new_complete, new) for key in relevant_keys}
         freq_old = {key for key, value in old.items() if value["frequent"]}
         freq_new = {key for key, value in new.items() if value["frequent"]}
         reduced_keys = {
             key for key, prior in old.items()
-            if prior["count"] > 0
-            and (key not in new or new[key]["count"] < prior["count"])
+            if old_counts[key] > 0 and new_counts[key] < old_counts[key]
         }
         same_count_type_changed_keys = {
             key for key, prior in old.items()
-            if key in new
-            and new[key]["count"] == prior["count"]
-            and new[key]["types"] != prior["types"]
+            if new_counts[key] == old_counts[key]
+            and new.get(key, {}).get("types", frozenset()) != prior["types"]
         }
         increased_keys = {
-            key for key, after in new.items()
-            if after["count"] > 0
-            and (key not in old or after["count"] > old[key]["count"])
+            key for key in relevant_keys
+            if new_counts[key] > 0
+            and (key not in old or new_counts[key] > old_counts[key])
         }
         changed_keys = reduced_keys | same_count_type_changed_keys
         metrics[kind] = {
@@ -235,15 +281,17 @@ def compare_reports(
             previous_types = prior["types"]
             current_types = after["types"] if after else frozenset()
             type_changed = previous_types != current_types
-            reduced = after is None or after["count"] < prior["count"]
-            if after is None:
-                description = "本次减少；上次对象已不在本次结果"
-            elif reduced:
-                description = f"停电次数减少 {prior['count'] - after['count']} 次"
-            else:
-                description = "停电次数未变，类型变化"
+            previous_count = old_counts[key]
+            current_count = new_counts[key]
+            reduced = current_count < previous_count
+            description = (
+                f"停电次数减少 {previous_count - current_count} 次"
+                if reduced else "停电次数未变，类型变化"
+            )
             if type_changed and reduced:
                 description += "；类型变化"
+            if after is None:
+                description += "；本次已退出预警/频繁清单"
             remarks = []
             if reduced:
                 remarks.append("请核对原始停电记录、重导修订及剔除依据；原因待核")
@@ -255,9 +303,11 @@ def compare_reports(
             current_type_text = _all_types_text(current_types)
             rows.append({
                 "对象类型": kind, "用户或馈线编码": key,
-                "所属地市": (after or prior)["city"],
-                "上次停电次数": prior["count"] if prior else 0,
-                "本次停电次数": after["count"] if after else 0,
+                "所属地市": (
+                    new_complete.get(key) or after or old_complete.get(key) or prior
+                )["city"],
+                "上次停电次数": previous_count,
+                "本次停电次数": current_count,
                 "上次分类": previous_type_text,
                 "本次分类": current_type_text,
                 "变化说明": description,
@@ -267,9 +317,11 @@ def compare_reports(
                     ("频繁停电用户清单" if kind == "用户" else "频繁停电线路清单") +
                     f"/{key}" if prior else ""
                 ),
-                "本次来源定位": new_locs.get(key) or (f"本次用户或馈线编码/{key}" if after else ""),
+                "本次来源定位": new_locs.get(key) or (
+                    f"本次用户或馈线编码/{key}" if current_count > 0 else ""
+                ),
             })
-            if kind == "用户" and after:
+            if kind == "用户" and current_count > 0:
                 user_explanations[key] = description + ("；" + "；".join(remarks) if remarks else "")
     comparison = {
         "available": True, "previous_report": str(previous_file),

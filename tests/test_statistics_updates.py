@@ -177,8 +177,15 @@ class StatisticsUpdatesTest(unittest.TestCase):
                     {"用户编码": "U2", "所属馈线编码": "L2", "所属地市": "广州", "停电总次数": 4, "频繁停电类型": "连续60天停电次数超过3次"},
                 ]),
                 "停电预警用户清单": pd.DataFrame(),
+                "停电用户清单": pd.DataFrame([
+                    {"用户编码": "U1", "所属馈线编码": "L1", "所属地市": "广州", "停电总次数": 6},
+                    {"用户编码": "U2", "所属馈线编码": "L2", "所属地市": "广州", "停电总次数": 4},
+                ]),
                 "频繁停电线路清单": pd.DataFrame([
                     {"所属馈线编码": "L2", "所属地市": "广州", "停电总次数": 4, "频繁停电类型": "连续60天停电次数超过3次"},
+                ]),
+                "停电线路清单": pd.DataFrame([
+                    {"所属馈线编码": "L2", "所属地市": "广州", "停电总次数": 4},
                 ]),
                 "停电预警线路清单": pd.DataFrame(),
             }
@@ -196,11 +203,21 @@ class StatisticsUpdatesTest(unittest.TestCase):
                     {"用户编码": "U1", "所属馈线编码": "L1", "所属地市": "广州", "停电总次数": 5, "频繁停电类型": "一年内停电次数超过5次"},
                 ]),
                 "停电预警用户清单": pd.DataFrame(),
+                "停电用户清单": pd.DataFrame([
+                    {"用户编码": "U1", "所属馈线编码": "L1", "所属地市": "广州", "停电总次数": 5},
+                    {"用户编码": "U2", "所属馈线编码": "L2", "所属地市": "广州", "停电总次数": 2},
+                ]),
                 "频繁停电线路清单": pd.DataFrame(),
+                "停电线路清单": pd.DataFrame([
+                    {"所属馈线编码": "L2", "所属地市": "广州", "停电总次数": 2},
+                ]),
                 "停电预警线路清单": pd.DataFrame(),
             }
             old_raw = pd.DataFrame([{"工单号": "A2", "用户编码": "U2", "所属馈线编码": "L2", "停电开始时间": "2026-09-09"}])
-            new_raw = pd.DataFrame([{"工单号": "A1", "用户编码": "U1", "所属馈线编码": "L1", "停电开始时间": "2026-09-10"}])
+            new_raw = pd.DataFrame([
+                {"工单号": "A1", "用户编码": "U1", "所属馈线编码": "L1", "停电开始时间": "2026-09-10"},
+                {"工单号": "A3", "用户编码": "U2", "所属馈线编码": "L2", "停电开始时间": "2026-09-10"},
+            ])
             new_sections = [{} for _ in range(20)]
             new_sections[11] = {"广州": 1}
             info, detail, explanations = compare_reports(
@@ -215,8 +232,11 @@ class StatisticsUpdatesTest(unittest.TestCase):
             self.assertEqual(info["metrics"]["用户"]["decreased_outage_count"], 2)
             self.assertEqual(info["metrics"]["用户"]["same_count_type_changed"], 0)
             lost = detail[(detail["对象类型"] == "用户") & (detail["用户或馈线编码"] == "U2")].iloc[0]
-            self.assertIn("本次减少", lost["变化说明"])
+            self.assertEqual(int(lost["本次停电次数"]), 2)
+            self.assertIn("停电次数减少 2 次", lost["变化说明"])
+            self.assertIn("退出预警/频繁清单", lost["变化说明"])
             self.assertIn("工单A2", lost["上次来源定位"])
+            self.assertIn("工单A3", lost["本次来源定位"])
             self.assertIn("停电次数减少", explanations["U1"])
             self.assertIn("多规则命中", explanations["U1"])
             self.assertIn("频繁/年>5次；频繁/60天>3次", detail.loc[detail["用户或馈线编码"] == "U1", "上次分类"].iloc[0])
